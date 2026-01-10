@@ -1,0 +1,14 @@
+name: compose-exec-demo
+
+services:
+  app:
+    image: golang:1.25
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - .:/app
+    working_dir: /app
+    command: go run example/main.go
+  sibling:
+    image: alpine:latest
+    profiles:
+      - manual
