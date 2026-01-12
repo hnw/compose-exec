@@ -44,9 +44,3 @@ require (
 	golang.org/x/text v0.32.0 // indirect
 	golang.org/x/time v0.14.0 // indirect
 )
-
-// Docker's Go SDK is currently published under github.com/moby/moby modules,
-// but the canonical import paths used by most code remain github.com/docker/docker/....
-replace github.com/docker/docker/api => github.com/moby/moby/api v1.52.0
-
-replace github.com/docker/docker/client => github.com/moby/moby/client v0.2.1
