@@ -110,6 +110,36 @@ func (f *fakeDocker) ContainerRemove(
 	return nil
 }
 
+func (f *fakeDocker) ContainerList(
+	_ context.Context,
+	_ container.ListOptions,
+) ([]container.Summary, error) {
+	return []container.Summary{}, nil
+}
+
+func (f *fakeDocker) NetworkList(
+	_ context.Context,
+	_ network.ListOptions,
+) ([]network.Summary, error) {
+	return []network.Summary{}, nil
+}
+
+func (f *fakeDocker) NetworkCreate(
+	_ context.Context,
+	_ string,
+	_ network.CreateOptions,
+) (network.CreateResponse, error) {
+	return network.CreateResponse{ID: "fake-network-id"}, nil
+}
+
+func (f *fakeDocker) NetworkRemove(_ context.Context, _ string) error {
+	return nil
+}
+
+func (f *fakeDocker) Close() error {
+	return nil
+}
+
 type nopReader struct{}
 
 func (n *nopReader) Read(_ []byte) (int, error) { return 0, io.EOF }

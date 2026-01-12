@@ -20,9 +20,12 @@ import (
 	cerrdefs "github.com/containerd/errdefs"
 	dockertypes "github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/mount"
+	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/pkg/stdcopy"
+	"github.com/docker/go-connections/nat"
 )
 
 // Cmd represents a pending command execution, similar to os/exec.Cmd.
@@ -82,7 +85,7 @@ func (c *Cmd) markStarted() error {
 func (c *Cmd) ensureService() {
 	if c.service == nil {
 		// Allow constructing Cmd manually, but then working dir resolution uses process cwd.
-		c.service = NewService(c.Service)
+		c.service = NewService("default", c.Service)
 	}
 }
 
@@ -149,14 +152,37 @@ func (c *Cmd) containerConfigs(mounts []mount.Mount) (*container.Config, *contai
 	envBase := serviceEnvSlice(c.Service)
 	env := mergeEnv(envBase, c.Env)
 
+	exposedPorts := nat.PortSet{}
+	portBindings := nat.PortMap{}
+
+	for _, p := range c.Service.Ports {
+		proto := p.Protocol
+		if proto == "" {
+			proto = "tcp"
+		}
+
+		portKey := nat.Port(fmt.Sprintf("%d/%s", p.Target, proto))
+
+		exposedPorts[portKey] = struct{}{}
+
+		if p.Published != "" {
+			binding := nat.PortBinding{
+				HostIP:   p.HostIP,
+				HostPort: p.Published,
+			}
+			portBindings[portKey] = append(portBindings[portKey], binding)
+		}
+	}
+
 	cfg := &container.Config{
 		Image:      c.Service.Image,
 		WorkingDir: c.Service.WorkingDir,
 		Env:        env,
 		// TODO: Future support for TTY (out of scope).
-		Tty:       false,
-		OpenStdin: c.Stdin != nil,
-		StdinOnce: false,
+		Tty:          false,
+		OpenStdin:    c.Stdin != nil,
+		StdinOnce:    false,
+		ExposedPorts: exposedPorts,
 	}
 	if hc := c.Service.HealthCheck; hc != nil {
 		cfg.Healthcheck = dockerHealthConfig(hc)
@@ -172,8 +198,9 @@ func (c *Cmd) containerConfigs(mounts []mount.Mount) (*container.Config, *contai
 	}
 
 	hostCfg := &container.HostConfig{
-		Init:   ptr(initEnabled),
-		Mounts: mounts,
+		Init:         ptr(initEnabled),
+		Mounts:       mounts,
+		PortBindings: portBindings,
 	}
 	applyHostSecurityConfig(hostCfg, c.Service)
 	if nm := strings.TrimSpace(c.Service.NetworkMode); nm != "" {
@@ -352,6 +379,7 @@ func (c *Cmd) storeWait(dc dockerAPI, id string) {
 }
 
 // Start creates and starts the container for the configured service command.
+//nolint:gocyclo // Orchestrates container lifecycle with explicit error handling.
 func (c *Cmd) Start(ctx context.Context) (startErr error) {
 	if c.loadErr != nil {
 		return c.loadErr
@@ -401,7 +429,15 @@ func (c *Cmd) Start(ctx context.Context) (startErr error) {
 
 	cfg, hostCfg := c.containerConfigs(mounts)
 
-	createResp, err := dc.ContainerCreate(sigCtx, cfg, hostCfg, nil, nil, containerName)
+	networkingCfg := c.resolveNetworking(sigCtx, dc)
+
+	if networkingCfg != nil {
+		if netErr := c.ensureNetworks(sigCtx, dc, networkingCfg); netErr != nil {
+			return netErr
+		}
+	}
+
+	createResp, err := dc.ContainerCreate(sigCtx, cfg, hostCfg, networkingCfg, nil, containerName)
 	if err != nil {
 		return err
 	}
@@ -432,6 +468,81 @@ func (c *Cmd) Start(ctx context.Context) (startErr error) {
 
 	c.storeWait(dc, createResp.ID)
 	return nil
+}
+
+func (c *Cmd) ensureNetworks(
+	ctx context.Context,
+	dc dockerAPI,
+	nc *network.NetworkingConfig,
+) error {
+	for netName := range nc.EndpointsConfig {
+		list, err := dc.NetworkList(ctx, network.ListOptions{
+			Filters: filters.NewArgs(filters.Arg("name", netName)),
+		})
+		if err != nil {
+			return err
+		}
+
+		exists := false
+		for _, n := range list {
+			if n.Name == netName {
+				exists = true
+				break
+			}
+		}
+
+		if exists {
+			continue
+		}
+
+		_, err = dc.NetworkCreate(ctx, netName, network.CreateOptions{
+			Labels: map[string]string{
+				"com.docker.compose.project": c.service.projectName,
+				"com.docker.compose.network": "default",
+			},
+		})
+		if err != nil {
+			// 【修正箇所】競合により他プロセスが先に作成していた場合はエラーを無視して続行する
+			if cerrdefs.IsAlreadyExists(err) || strings.Contains(err.Error(), "already exists") {
+				continue
+			}
+			return fmt.Errorf("failed to create network %q: %w", netName, err)
+		}
+	}
+	return nil
+}
+
+// resolveNetworking determines which network(s) to attach to.
+// It iterates through all networks defined in the service config.
+func (c *Cmd) resolveNetworking(_ context.Context, _ dockerAPI) *network.NetworkingConfig {
+	if c.Service.NetworkMode != "" {
+		return nil
+	}
+
+	if c.service.projectName == "" {
+		return nil
+	}
+
+	endpoints := make(map[string]*network.EndpointSettings)
+
+	if len(c.Service.Networks) > 0 {
+		for name := range c.Service.Networks {
+			netName := fmt.Sprintf("%s_%s", c.service.projectName, name)
+
+			endpoints[netName] = &network.EndpointSettings{
+				Aliases: []string{c.Service.Name},
+			}
+		}
+	} else {
+		netName := fmt.Sprintf("%s_default", c.service.projectName)
+		endpoints[netName] = &network.EndpointSettings{
+			Aliases: []string{c.Service.Name},
+		}
+	}
+
+	return &network.NetworkingConfig{
+		EndpointsConfig: endpoints,
+	}
 }
 
 type waitState struct {

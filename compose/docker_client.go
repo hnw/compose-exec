@@ -42,6 +42,19 @@ type dockerAPI interface {
 	ContainerStop(ctx context.Context, containerID string, options container.StopOptions) error
 	ContainerKill(ctx context.Context, containerID string, signal string) error
 	ContainerRemove(ctx context.Context, containerID string, options container.RemoveOptions) error
+	ContainerList(
+		ctx context.Context,
+		options container.ListOptions,
+	) ([]container.Summary, error)
+
+	NetworkList(ctx context.Context, options network.ListOptions) ([]network.Summary, error)
+	NetworkCreate(
+		ctx context.Context,
+		name string,
+		options network.CreateOptions,
+	) (network.CreateResponse, error)
+	NetworkRemove(ctx context.Context, networkID string) error
+	Close() error
 }
 
 func newDockerClient() (dockerAPI, error) {

@@ -12,19 +12,24 @@ import (
 //
 // It is intentionally small; lifecycle is managed per Cmd.
 type Service struct {
-	config     types.ServiceConfig
-	workingDir string
-	loadErr    error
+	config      types.ServiceConfig
+	projectName string
+	workingDir  string
+	loadErr     error
 }
 
 // NewService creates a Service from a resolved service config.
 //
 // Relative paths (e.g. bind mount sources) are resolved relative to the current
 // working directory.
-func NewService(config types.ServiceConfig) *Service {
+func NewService(projectName string, config types.ServiceConfig) *Service {
 	cwd, _ := os.Getwd()
 	cwd, _ = filepath.Abs(cwd)
-	return &Service{config: config, workingDir: cwd}
+	return &Service{
+		config:      config,
+		projectName: projectName,
+		workingDir:  cwd,
+	}
 }
 
 // From loads the compose project in the current directory and returns a Service
@@ -53,7 +58,7 @@ func From(serviceName string) *Service {
 		return &Service{loadErr: err}
 	}
 
-	s := NewService(svcConfig)
+	s := NewService(proj.Name, svcConfig)
 	if proj.WorkingDir != "" {
 		s.workingDir = proj.WorkingDir
 	}
@@ -74,7 +79,7 @@ func FromProject(project *types.Project, serviceName string) (*Service, error) {
 		wd, _ = os.Getwd()
 		wd, _ = filepath.Abs(wd)
 	}
-	s := NewService(cfg)
+	s := NewService(project.Name, cfg)
 	s.workingDir = wd
 	return s, nil
 }

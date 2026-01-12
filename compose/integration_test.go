@@ -86,6 +86,15 @@ func setupIntegration(t *testing.T) (dir string, svc *Service) {
 	if err != nil {
 		t.Fatalf("FromProject: %v", err)
 	}
+
+	// Ensure per-test Compose resources (networks, etc.) are removed.
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := Down(ctx, proj.Name); err != nil {
+			t.Logf("Down: %v", err)
+		}
+	})
 	return dir, svc
 }
 
@@ -120,6 +129,15 @@ func setupIntegrationWithComposeYAML(t *testing.T, yaml string) (dir string, pro
 	if err != nil {
 		t.Fatalf("LoadProject: %v", err)
 	}
+
+	// Ensure per-test Compose resources (networks, etc.) are removed.
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := Down(ctx, proj.Name); err != nil {
+			t.Logf("Down: %v", err)
+		}
+	})
 	return dir, proj
 }
 
@@ -377,10 +395,10 @@ func TestIntegration_ExampleScenarioRegression(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	siblingCmd := From("sibling").Command("cat", "/etc/os-release")
+	siblingCmd := From("target").Command("cat", "/etc/os-release")
 	out, err := siblingCmd.Output(ctx)
 	if err != nil {
-		t.Fatalf("sibling Run: %v", err)
+		t.Fatalf("sibling container ('target') Run: %v", err)
 	}
 	if !strings.Contains(strings.ToLower(string(out)), "alpine") {
 		t.Fatalf("stdout=%q (expected alpine)", string(out))
@@ -505,7 +523,6 @@ func TestIntegration_PrivilegedAndCapabilitiesMapping(t *testing.T) {
 		t.Fatalf("caps Wait: %v", err)
 	}
 }
-
 
 func containsCapability(ss []string, want string) bool {
 	want = strings.ToUpper(want)

@@ -12,7 +12,21 @@ type ExitError struct {
 }
 
 func (e *ExitError) Error() string {
-	return fmt.Sprintf("compose: exit status %d", e.Code)
+	base := fmt.Sprintf("compose: exit status %d", e.Code)
+	if len(e.Stderr) == 0 {
+		return base
+	}
+
+	const maxSnippetLen = 512
+	snippet := e.Stderr
+
+	prefix := ""
+	if len(snippet) > maxSnippetLen {
+		snippet = snippet[len(snippet)-maxSnippetLen:]
+		prefix = "... "
+	}
+
+	return fmt.Sprintf("%s: stderr=%s%q", base, prefix, string(snippet))
 }
 
 // ExitCode returns the process exit status code.

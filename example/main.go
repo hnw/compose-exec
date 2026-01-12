@@ -1,74 +1,74 @@
-// Package main demonstrates executing a command in a Compose service.
+// Package main demonstrates using compose-exec to run and supervise a service.
 package main
 
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
-	"os/exec"
-	"strings"
+	"time"
 
 	"github.com/hnw/compose-exec/compose"
 )
 
-const dockerSockPath = "/var/run/docker.sock"
-
-func maybePrintRootlessHint(err error) {
-	if err == nil {
-		return
-	}
-	msg := err.Error()
-	if os.IsPermission(err) ||
-		(strings.Contains(msg, "permission denied") && strings.Contains(msg, "docker.sock")) {
-		fmt.Fprintln(
-			os.Stderr,
-			"Hint: /var/run/docker.sock に書き込みできません。Rootless 環境 (lima/Colima 等) の可能性があります。",
-		)
-		fmt.Fprintln(
-			os.Stderr,
-			"Hint: docker.sock の bind mount / パーミッション設定 (例: Docker Desktop/Colima の設定や DOCKER_HOST) を見直してください。",
-		)
-	}
-}
-
-func diagnoseDockerSockWrite() {
-	f, err := os.OpenFile(dockerSockPath, os.O_WRONLY, 0)
-	if err == nil {
-		_ = f.Close()
-		return
-	}
-	maybePrintRootlessHint(err)
-}
-
 func main() {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-	// Rootless/VM 環境で /var/run/docker.sock が読めても書けず失敗するケースがあるため、事前に診断する。
-	diagnoseDockerSockWrite()
+	svc := compose.From("target")
 
-	fmt.Println("=== 1. Controller (Self) ===")
-	// 自分自身のOS情報を表示 (Debian)
-	cmd := exec.Command("cat", "/etc/os-release")
+	serverCmd := `
+		echo "[Target] Initializing Backend Service...";
+		sleep 3;
+		echo "[Target] Starting TCP Listener (Auto-shutdown in 20s)...";
+
+		timeout 20s sh -c 'while true; do nc -lk -p 8080 -e cat || nc -l -p 8080; sleep 0.1; done'
+	`
+
+	fmt.Println("[Controller] Launching 'Slow-Start' Target Container...")
+	cmd := svc.Command("sh", "-c", serverCmd)
 	cmd.Stdout = os.Stdout
-	if err := cmd.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+	cmd.Stderr = os.Stderr
+
+	defer func() {
+		fmt.Println("\n[Controller] Cleaning up target container...")
+		cancel()
+		_ = cmd.Wait(ctx)
+		fmt.Println("[Controller] Cleanup done.")
+	}()
+
+	if err := cmd.Start(ctx); err != nil {
+		panic(err)
+	}
+
+	targetAddr := "target:8080"
+	fmt.Println("[Controller] 1. Attempting IMMEDIATE connection (Expect FAILURE)...")
+
+	failConn, err := net.DialTimeout("tcp", targetAddr, 500*time.Millisecond)
+	if err == nil {
+		_ = failConn.Close()
+		fmt.Println("Error: Unexpectedly connected! The demo scenario is broken.")
 		os.Exit(1)
 	}
-	fmt.Println("============================")
+	fmt.Printf("   -> As expected, connection failed: %v\n", err)
 
-	fmt.Println()
+	fmt.Println("[Controller] 2. Waiting for Target (Port 8080) to be Ready...")
+	startWait := time.Now()
 
-	fmt.Println("=== 2. Sibling (Target) ===")
-	// Siblingコンテナを起動してOS情報を表示 (Alpine)
-	// docker-compose.yml の "sibling" サービスを使用
-	siblingCmd := compose.From("sibling").Command("cat", "/etc/os-release")
-	siblingCmd.Stdout = os.Stdout
-	siblingCmd.Stderr = os.Stderr
+	if waitErr := cmd.WaitUntilHealthy(ctx); waitErr != nil {
+		panic(waitErr)
+	}
 
-	if err := siblingCmd.Run(ctx); err != nil {
-		maybePrintRootlessHint(err)
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+	elapsed := time.Since(startWait).Round(time.Millisecond)
+	fmt.Printf("   -> Target is HEALTHY! Waited: %v\n", elapsed)
+
+	fmt.Printf("[Controller] 3. Connecting to %s ... ", targetAddr)
+
+	conn, err := net.DialTimeout("tcp", targetAddr, 2*time.Second)
+	if err != nil {
+		fmt.Printf("FAILED: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Println("===========================")
+	_ = conn.Close()
+	fmt.Println("SUCCESS! (Connection established)")
 }
