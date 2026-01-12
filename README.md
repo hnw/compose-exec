@@ -3,10 +3,10 @@
 [![Go Reference](https://pkg.go.dev/badge/github.com/hnw/compose-exec.svg)](https://pkg.go.dev/github.com/hnw/compose-exec)
 [Japanese README (日本語ドキュメント)](./README_ja.md)
 
-**Native Docker Compose Automation for Go: No CLI, No Shell, Just Code.**
+**Run Docker Compose services like `os/exec`. No Docker CLI required.**
 
-`compose-exec` is a Go library that manages Docker Compose services directly via the Docker Engine API, treating your existing `docker-compose.yml` as the definition.
-It eliminates the need for the `docker` binary and shell scripts, providing a safer, more robust alternative to `os/exec`.
+`compose-exec` is a Go library that manages the lifecycle of containers directly via the Docker Engine API, using your `docker-compose.yml` as the definition.
+It eliminates the need for the `docker` binary and shell scripts, providing a safer, programmable alternative for container automation.
 
 ```mermaid
 graph LR
@@ -26,8 +26,8 @@ graph LR
 
     Target("Target Container"):::target
 
-    Lib -- "1. Read Config" --> File
-    Lib -- "2. Call API (Socket)" --> Daemon
+    Lib -- "1. Load Config" --> File
+    Lib -- "2. API Call (Socket)" --> Daemon
     Daemon -- "3. Spawn (DooD)" --> Target
 
     class Host host;
@@ -35,145 +35,136 @@ graph LR
 
 ```
 
-## ⚡ Core Values
+## 📖 Usage (Integration Testing)
 
-### 1. Robust Container Lifecycle
-Using `exec.Command` to drive the Docker CLI often leads to zombie containers if the Go process is interrupted.
-`compose-exec` communicates directly with the API, ensuring that container lifecycle is strictly tied to your Go `Context`. When your test times out or is cancelled, the containers are guaranteed to stop.
-
-### 2. Zero Docker CLI Dependency
-No need to install the `docker` binary in your runtime environment.
-This means your tests and tools can run inside `distroless` or `scratch` images, keeping your CI runners lightweight and fast. It also ensures consistent behavior across Windows, Mac, and Linux, regardless of the host shell.
-
-### 3. Injection-Proof Architecture
-Constructing shell commands with user input always carries the risk of OS command injection.
-By bypassing the shell and using the Docker Socket directly, this library **structurally eliminates the possibility of command injection**. This allows you to build secure ChatOps bots and internal tools with confidence.
-
-## 🏃 See it in action
-
-This repository itself serves as a functional DooD demo.
-Run the following to see the Sibling Container Pattern in action, simulating a real CI environment.
-
-```bash
-# 1. Clone
-git clone [https://github.com/hnw/compose-exec.git](https://github.com/hnw/compose-exec.git)
-cd compose-exec
-
-# 2. Run the demo
-# This starts the "app" container, which then dynamically orchestrates the "sibling" container.
-docker compose run app
-
-```
-
----
-
-## 🚀 Quick Start
-
-### Installation
-
-```bash
-go get github.com/hnw/compose-exec
-
-```
-
-> **Note:** The library handles image pulling and container creation automatically based on your Compose file.
-
-### Example: Waiting for Health & Execution
+Example of using an existing `docker-compose.yml` to start a database and wait for it to be healthy before running tests.
 
 ```go
 package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"github.com/hnw/compose-exec/compose"
 )
 
 func main() {
-	ctx := context.Background()
+	// Context to manage container lifecycle
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-	// 1. Target a service defined in docker-compose.yml
-	// Loads config for the "target" service.
-	svc := compose.From("target")
+	// 1. Load "db" service config from docker-compose.yml
+	svc := compose.From("db")
 
-	// 2. Define the command
-	cmd := svc.Command("echo", "Hello from container")
+	// 2. Define command (Empty args = use image default command)
+	cmd := svc.Command("")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
-	// 3. (Optional) Wait for Healthcheck
-	// If a healthcheck is defined in YAML, this blocks until the container is healthy.
-	// Perfect for waiting for DBs or API services.
-	// if err := cmd.WaitUntilHealthy(ctx); err != nil {
-	// 	panic(err)
-	// }
-
-	// 4. Run and Cleanup
-	// Manages the full lifecycle: Start -> Attach -> Stop -> Remove
-	if err := cmd.Run(ctx); err != nil {
+	// 3. Start the container asynchronously
+	if err := cmd.Start(ctx); err != nil {
 		panic(err)
 	}
+
+	// Ensure container is removed when function exits
+	defer cmd.Wait(ctx)
+
+	// 4. ✨ Wait for Healthcheck
+	// Uses the healthcheck defined in your YAML. No more arbitrary "sleep 10".
+	fmt.Println("Waiting for DB to be healthy...")
+	if err := cmd.WaitUntilHealthy(ctx); err != nil {
+		panic(err)
+	}
+
+	// 5. Run your tests or logic
+	fmt.Println("DB is ready! Running tests...")
+	// runTests()
 }
 
 ```
 
----
+## 🏃 Try it now (Sibling Container Demo)
 
-## 🛠 Use Cases
+This repository itself serves as a functional demo.
+Run the following to see the "Controller" container dynamically spawn and control a "Sibling" container. No Go installation required.
 
-### A. Self-Contained Integration Testing
-
-Run your entire test suite—infrastructure setup, execution, and teardown—with a single `go test` command. No `Makefile` or external scripts required.
-
-### B. Lightweight Agents / ChatOps
-
-Ideal for building bots (e.g., Slack/Discord) that execute specific containerized tasks.
-Since no `docker` binary is present in the container, it mitigates the risk of attackers leveraging standard tools for privilege escalation in case of a compromise.
-
----
-
-## ⚙️ DooD Configuration (CI / Container)
-
-To use `compose-exec` inside a container, you must configure a **Mirror Mount** to ensure the host file paths resolve correctly.
-
-```yaml
-services:
-  # 1. Controller (Your Go App / CI Runner)
-  controller:
-    image: gcr.io/distroless/static-debian12:latest
-    volumes:
-      # Required: Access to Docker API
-      - /var/run/docker.sock:/var/run/docker.sock
-      # Required: Mirror Mount
-      # Map host's current directory to the exact same path inside the container
-      - .:${PWD}
-    working_dir: ${PWD}
-    # Optional: Avoid permission issues with host files
-    user: "${UID}:${GID}"
-
-  # 2. Target Sibling (The service being called)
-  target:
-    image: alpine:latest
-    profiles:
-      - manual # Prevent auto-start
+```bash
+# Clone and run
+git clone https://github.com/hnw/compose-exec.git
+cd compose-exec
+docker compose run controller
 
 ```
 
-## Troubleshooting
+Execution Output
 
-* **permission denied (docker.sock):**
-If using Rootless Docker, Lima, or Colima, the container may not have write access to the socket.
-  * Ensure `user: "${UID}:${GID}"` is set
-  * or check the socket permissions on the host
+```text
+[Controller] Launching 'Slow-Start' Target Container...
+[Controller] 1. Attempting IMMEDIATE connection (Expect FAILURE)...
+   -> As expected, connection failed: dial tcp: lookup target: no such host
+[Controller] 2. Waiting for Target (Port 8080) to be Ready...
+   -> Target is HEALTHY! Waited: 3.2s
+[Controller] 3. Connecting to target:8080 ... SUCCESS!
 
-* **file not found (mounts):**
-In a DooD environment, bind mount paths are interpreted as host paths. If the path inside the container does not match the host path, the mount will fail. Please verify the "Mirror Mount" configuration described above.
+```
+
+This demonstrates the **DooD (Docker outside of Docker)** pattern, often used in CI environments.
+
+## ✨ Why compose-exec?
+
+* **No Docker Binary Required:**
+Runs without the `docker` CLI installation. Compatible with `distroless` or `scratch` images.
+* **Robust Lifecycle Management:**
+Strictly ties container lifecycle to your Go `Context`. If your program panics or times out, containers are cleaned up ensuring no zombie processes.
+* **Secure & Injection-Proof:**
+Avoids shell execution entirely. By using the API directly, it structurally eliminates OS command injection risks.
+Ideal for building secure **ChatOps bots** or **AI Agent sandboxes**.
+
+## 🛠 Use Cases
+
+1. **Self-Contained Integration Testing:**
+Spin up infrastructure (DBs, MQs), run tests, and teardown everything within a single `go test` command. No Makefiles required.
+2. **AI Agents / ChatOps:**
+Build secure tools where AI agents can execute tasks in isolated containers. Since there is no `docker` binary inside the agent container, privilege escalation risks are minimized.
+
+## ⚙️ Configuration (DooD Setup)
+
+When running this library inside a container (Docker-outside-of-Docker), you must configure the volume mounts correctly.
+
+**Mirror Mounting** is essential. You must map the host's current directory to the exact same path inside the container so that the Docker Daemon (running on the host) can resolve relative paths and bind mounts defined in your Compose file.
+
+**docker-compose.yml (Controller Example):**
+
+```yaml
+services:
+  controller:
+    image: golang:1.24
+    volumes:
+      # 1. Access Docker API (Required)
+      - /var/run/docker.sock:/var/run/docker.sock
+
+      # 2. Mirror Mount (Required)
+      # Map the host working dir (${PWD}) to the same path inside the container.
+      - .:${PWD}
+
+    # 3. Match Working Directory
+    working_dir: ${PWD}
+
+```
+
+## Installation
+
+```bash
+go get github.com/hnw/compose-exec
+
+```
 
 ## Requirements
 
 * **Go:** 1.24+
-* **Docker Engine:** API version 1.40+
-* **OS:** Linux, macOS (Docker Desktop), Windows (WSL2 recommended)
+* **Docker Engine:** API v1.40+
+* **OS:** Linux, macOS, Windows (WSL2 recommended)
 
 ## License
 

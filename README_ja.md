@@ -1,12 +1,12 @@
 # compose-exec
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/hnw/compose-exec.svg)](https://pkg.go.dev/github.com/hnw/compose-exec)
-[English README is here](./README.md)
+[English README](./README.md)
 
-**GoネイティブなDocker Compose自動化ライブラリ: CLI非依存・シェルスクリプト不要 **
+**`os/exec` のように Compose サービスを扱う、Docker CLI 非依存の Go ライブラリ**
 
-`compose-exec` は、`docker-compose.yml` を定義として利用し、Docker Engine API を介して直接サービスを管理する Go ライブラリです。
-`docker` コマンドや外部シェルスクリプトへの依存を排除し、`os/exec` を使用するよりも安全かつ堅牢なコンテナ管理を実現します。
+`compose-exec` は、`docker-compose.yml` を定義ファイルとして利用し、Go のコードから直接コンテナのライフサイクル（起動・実行・終了）を制御するライブラリです。
+`docker` コマンドやシェルスクリプトを一切介さず、Docker Engine API を直接操作するため、安全かつ堅牢にコンテナを管理できます。
 
 ```mermaid
 graph LR
@@ -35,151 +35,140 @@ graph LR
 
 ```
 
-## ⚡ Core Values
+## 📖 Usage (Integration Testing)
 
-### 1. コンテナ管理の堅牢化 (Robust Container Lifecycle)
-`exec.Command` で CLI を操作する場合、Go のコンテキストキャンセルとコンテナの停止を同期させるには複雑なシグナル処理が必要です。
-本ライブラリは API を直接制御するため、Go プロセスの終了に合わせてコンテナを確実に停止・クリーンアップします。テスト中断時の**ゾンビコンテナ発生**を防ぎます。
-
-### 2. バイナリ依存ゼロ (Zero Docker CLI Dependency)
-実行環境に `docker` CLI をインストールする必要はありません。
-これにより、CI 環境で `docker:dind` 等の重いイメージを使う必要がなくなり、`distroless` や `scratch` といった超軽量イメージ上でも動作します。Windows/Mac/Linux の環境差異（パスやシェル）にも悩みません。
-
-### 3. OSコマンドインジェクション排除 (Injection-Proof Architecture)
-ユーザー入力を引数としてシェルコマンドを組み立てる実装は、常にインジェクションのリスクを伴います。
-本ライブラリはシェルを経由せず、ソケットを通じて API を直接叩くアーキテクチャを採用しています。構造的に **OS コマンドインジェクションが発生する余地を完全に排除** しており、ChatOps ボットや管理ツールを安全に開発できます。
-
-## 🏃 動作デモ (See it in action)
-
-百聞は一見に如かず。このリポジトリ自体が、完全に機能するDooD環境のデモになっています。
-以下のコマンドを実行すると、「親コンテナ(controller)が、兄弟コンテナ(Sibling)を動的に起動・待機・制御する」様子を確認できます。
-
-```bash
-# 1. クローン
-git clone https://github.com/hnw/compose-exec.git
-cd compose-exec
-
-# 2. デモ実行 (環境構築・テスト実行・後始末まで全自動)
-docker compose run controller
-
-```
-
----
-
-## 🚀 クイックスタート
-
-### インストール
-
-```bash
-go get github.com/hnw/compose-exec
-
-```
-
-> **注意:** このライブラリは、Composeファイルに基づいてイメージのプルとコンテナの作成を自動的に処理します。
-
-### 例: ヘルスチェックの待機と実行
+既存の `docker-compose.yml` を利用して、DBの起動を待機してからテスト処理を実行する例です。
+`testcontainers` のように Go コード内でコンテナ定義を書き直す必要はありません。
 
 ```go
 package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"github.com/hnw/compose-exec/compose"
 )
 
 func main() {
-	ctx := context.Background()
+	// 終了時にコンテナを停止させるためのコンテキスト
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-	// 1. docker-compose.ymlで定義されたサービスをターゲットにする
-	// "target" サービスの設定を読み込みます。
-	svc := compose.From("target")
+	// 1. docker-compose.yml から "db" サービスの設定を読み込む
+	svc := compose.From("db")
 
-	// 2. コマンドを定義する
-	cmd := svc.Command("echo", "Hello from container")
+	// 2. コマンド定義（引数なし＝イメージのデフォルトコマンドを使用）
+	cmd := svc.Command("")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
-	// 3. (任意) ヘルスチェックを待機する
-	// YAMLでヘルスチェックが定義されている場合、コンテナが正常になるまでブロックします。
-	// データベースやAPIサービスの起動待機に最適です。
-	// if err := cmd.WaitUntilHealthy(ctx); err != nil {
-	// 	panic(err)
-	// }
-
-	// 4. 実行とクリーンアップ
-	// ライフサイクル全体（開始 -> アタッチ -> 停止 -> 削除）を管理します。
-	if err := cmd.Run(ctx); err != nil {
+	// 3. コンテナを起動 (Start)
+	if err := cmd.Start(ctx); err != nil {
 		panic(err)
 	}
+
+	// 関数終了時に確実にコンテナを削除する
+	defer cmd.Wait(ctx)
+
+	// 4. ✨ ヘルスチェック通過を待機
+	// docker-compose.yml の healthcheck 定義を使用します。
+	// "sleep 10" のような不安定な待機処理は不要です。
+	fmt.Println("Waiting for DB to be healthy...")
+	if err := cmd.WaitUntilHealthy(ctx); err != nil {
+		panic(err)
+	}
+
+	// 5. テストやバッチ処理の実行
+	fmt.Println("DB is ready! Running tests...")
+	// runTests()
 }
 
 ```
 
----
+## 🏃 Try it now (Sibling Container Demo)
 
-## 🛠 ユースケース
+このリポジトリ自体が動作デモになっています。
+以下のコマンドを実行すると、「Go製のコントローラー（コンテナ）」が「兄弟コンテナ（Sibling）」を動的に起動・制御する様子を確認できます。Go のインストールも不要です。
 
-### A. 自己完結型の結合テスト
+```bash
+# クローンして実行するだけ
+git clone https://github.com/hnw/compose-exec.git
+cd compose-exec
+docker compose run controller
 
-インフラの構築、実行、破棄までのテストスイート全体を、単一の`go test`コマンドで実行できます。`Makefile`や外部スクリプトは不要です。
+```
 
-### B. 軽量エージェント / ChatOps
+実行結果ログ (Output)
 
-特定のコンテナ化されたタスクを実行するボット（SlackやDiscordなど）の構築に理想的です。
-コンテナ内に`docker`バイナリが存在しないため、万が一侵害された場合でも、攻撃者が標準ツールを利用して権限昇格を行うリスクを軽減できます。
+```text
+[Controller] Launching 'Slow-Start' Target Container...
+[Controller] 1. Attempting IMMEDIATE connection (Expect FAILURE)...
+   -> As expected, connection failed: dial tcp: lookup target: no such host
+[Controller] 2. Waiting for Target (Port 8080) to be Ready...
+   -> Target is HEALTHY! Waited: 3.2s
+[Controller] 3. Connecting to target:8080 ... SUCCESS!
 
----
+```
 
-## ⚙️ DooD設定 (CI / コンテナ)
+このデモは、CI環境（GitHub Actionsなど）で Docker コンテナ内から他のコンテナを操作する DooD (Docker outside of Docker) パターンの実装例としても参照できます。
 
-コンテナ内で `compose-exec` を使用する場合、以下の点に注意してボリュームを設定してください。
+## ✨ Why compose-exec?
 
-1. **Dockerソケット**: Docker APIを操作するために必須です。
-2. **プロジェクトディレクトリ**: `docker-compose.yml` を読み込むために必須です。
-3. **ミラーマウント (強く推奨)**:
-   ターゲットのサービスが**バインドマウント（ホストのファイルをマウント）を利用している場合**、ホスト側とコンテナ側のパスを完全に一致させる（ミラーマウントする）必要があります。
-   パスが異なると、Dockerデーモンがホスト上の正しいファイルを見つけられなくなります。
+シェルスクリプトや `exec.Command("docker", ...)` と比較したメリット：
+
+* **No Docker Binary Required:**
+実行環境に `docker` CLI が不要です。`distroless` や `scratch` ベースの軽量コンテナ内でも動作します。
+* **Robust Lifecycle Management:**
+Go の `Context` と連動してコンテナを管理します。テストがタイムアウトしたりパニックした場合でも、コンテナは確実に停止・削除され、ゾンビプロセス化を防ぎます。
+* **Secure & Injection-Proof:**
+シェルを経由せず API を直接叩くため、OS コマンドインジェクションのリスクを構造的に排除しています。ChatOps ボットや、LLM (AI) がコードを実行するためのサンドボックス環境の実装に最適です。
+
+## 🛠 Use Cases
+
+1. **自己完結型の結合テスト (Integration Testing)**
+`TestMain` でインフラ（DBやMQ）を立ち上げ、テストを実行し、ティアダウンするまでを `go test` だけで完結させることができます。Makefile は不要です。
+2. **AI Agents / ChatOps**
+Slack ボットや AI エージェントが、ユーザーのリクエストに応じて安全にタスクを実行する基盤として利用できます。万が一コンテナ内に侵入されても、攻撃者が利用できる `docker` コマンドが存在しません。
+
+## ⚙️ Configuration (DooD Setup)
+
+コンテナ内（CI環境など）でこのライブラリを使用する場合、ホスト側の Docker デーモンを操作するための設定が必要です。
+
+特に **「ミラーマウント（Mirror Mount）」** が重要です。コンテナ内のファイルパスとホスト側のファイルパスを一致させることで、Compose ファイルの相対パス解決やバインドマウントが正しく機能します。
+
+**docker-compose.yml (Controller 側の設定例):**
 
 ```yaml
 services:
   controller:
     image: golang:1.24
     volumes:
-      # 1. Docker APIへのアクセス (必須)
+      # 1. Docker API ソケットの共有 (必須)
       - /var/run/docker.sock:/var/run/docker.sock
-      # 2 & 3. プロジェクトの読み込み + ミラーマウント
-      # ホストのパス($PWD)を、コンテナ内の同じパス($PWD)にマウントする
+
+      # 2. ミラーマウント (必須)
+      # ホストのカレントディレクトリ(${PWD})を、コンテナ内の同じパスにマウントする
       - .:${PWD}
-    # コンテナ内の作業ディレクトリもホストと合わせる
+
+    # 3. 作業ディレクトリの同期
     working_dir: ${PWD}
 
-  # 2. ターゲットとなるシブリング (呼び出される側のサービス)
-  target:
-    image: alpine:latest
-    profiles:
-      - manual # 自動起動を防止
-    volumes:
-      - .:${PWD}
-    working_dir: ${PWD}
 ```
 
-## トラブルシューティング
+## Installation
 
-* **permission denied (docker.sock):**
-Rootless Docker、Lima、Colima等を使用している場合、コンテナ内のユーザーがソケットへの書き込み権限を持っていない可能性があります。
-  * `docker-compose.yml` で `user: "${UID}:${GID}"` を指定する。
-  * または、ホスト側でソケットのパーミッションを確認してください。
+```bash
+go get github.com/hnw/compose-exec
 
-* **file not found (mounts):**
-DooD環境では、バインドマウントのパスはホスト側のパスとして解釈されます。コンテナ内のパスとホスト側のパスが一致していない場合、マウントに失敗します。上記の「ミラーマウント」設定を確認してください。
+```
 
-## 要件
+## Requirements
 
 * **Go:** 1.24以上
 * **Docker Engine:** APIバージョン 1.40以上
 * **OS:** Linux, macOS (Docker Desktop), Windows (WSL2推奨)
 
-## ライセンス
+## License
 
 MIT
