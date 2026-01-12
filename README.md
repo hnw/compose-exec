@@ -3,11 +3,10 @@
 [![Go Reference](https://pkg.go.dev/badge/github.com/hnw/compose-exec.svg)](https://pkg.go.dev/github.com/hnw/compose-exec)
 [Japanese README (日本語ドキュメント)](./README_ja.md)
 
-**Native Docker Compose Execution for Go: Zero-Dependency Integration Testing & Minimalist DooD.**
+**Native Docker Compose Automation for Go: No CLI, No Shell, Just Code.**
 
-`compose-exec` is a Go library that manages Docker Compose services directly via the Docker Engine API, using your existing `docker-compose.yml` as the **Single Source of Truth**.
-
-It eliminates dependencies on the `docker` binary or external shell scripts, enabling truly portable integration tests and ultra-lightweight container orchestration agents.
+`compose-exec` is a Go library that manages Docker Compose services directly via the Docker Engine API, treating your existing `docker-compose.yml` as the definition.
+It eliminates the need for the `docker` binary and shell scripts, providing a safer, more robust alternative to `os/exec`.
 
 ```mermaid
 graph LR
@@ -38,18 +37,33 @@ graph LR
 
 ## ⚡ Core Values
 
-### 1. Single Source of Truth
+### 1. Robust Container Lifecycle
+Using `exec.Command` to drive the Docker CLI often leads to zombie containers if the Go process is interrupted.
+`compose-exec` communicates directly with the API, ensuring that container lifecycle is strictly tied to your Go `Context`. When your test times out or is cancelled, the containers are guaranteed to stop.
 
-Stop redefining your container specs in Go structs. `compose-exec` reads your existing `docker-compose.yml` directly. This prevents configuration drift and ensures you test against the exact same definition used in production/development.
+### 2. Zero Docker CLI Dependency
+No need to install the `docker` binary in your runtime environment.
+This means your tests and tools can run inside `distroless` or `scratch` images, keeping your CI runners lightweight and fast. It also ensures consistent behavior across Windows, Mac, and Linux, regardless of the host shell.
 
-### 2. Orchestration as Code
+### 3. Injection-Proof Architecture
+Constructing shell commands with user input always carries the risk of OS command injection.
+By bypassing the shell and using the Docker Socket directly, this library **structurally eliminates the possibility of command injection**. This allows you to build secure ChatOps bots and internal tools with confidence.
 
-Handle complex lifecycles with robust Go logic. Use helpers like `WaitUntilHealthy` to ensure databases or services are fully ready before running tests, stabilizing flaky integration suites.
+## 🏃 See it in action
 
-### 3. Minimalist DooD (Docker out of Docker)
+This repository itself serves as a functional DooD demo.
+Run the following to see the Sibling Container Pattern in action, simulating a real CI environment.
 
-No `docker` CLI. No shell.
-Because it communicates directly with the Docker API, your app can run on `distroless` or `scratch` images. This drastically reduces image size for CI runners or bots and **minimizes the attack surface** by removing dangerous binaries from the runtime environment.
+```bash
+# 1. Clone
+git clone [https://github.com/hnw/compose-exec.git](https://github.com/hnw/compose-exec.git)
+cd compose-exec
+
+# 2. Run the demo
+# This starts the "app" container, which then dynamically orchestrates the "sibling" container.
+docker compose run app
+
+```
 
 ---
 
@@ -58,7 +72,7 @@ Because it communicates directly with the Docker API, your app can run on `distr
 ### Installation
 
 ```bash
-go get [github.com/hnw/compose-exec](https://github.com/hnw/compose-exec)
+go get github.com/hnw/compose-exec
 
 ```
 
@@ -72,15 +86,15 @@ package main
 import (
 	"context"
 	"os"
-	"[github.com/hnw/compose-exec/compose](https://github.com/hnw/compose-exec/compose)"
+	"github.com/hnw/compose-exec/compose"
 )
 
 func main() {
 	ctx := context.Background()
 
 	// 1. Target a service defined in docker-compose.yml
-	// Loads config for the "sibling" service.
-	svc := compose.From("sibling")
+	// Loads config for the "target" service.
+	svc := compose.From("target")
 
 	// 2. Define the command
 	cmd := svc.Command("echo", "Hello from container")
@@ -138,16 +152,26 @@ services:
     user: "${UID}:${GID}"
 
   # 2. Target Sibling (The service being called)
-  sibling:
+  target:
     image: alpine:latest
     profiles:
       - manual # Prevent auto-start
 
 ```
 
+## Troubleshooting
+
+* **permission denied (docker.sock):**
+If using Rootless Docker, Lima, or Colima, the container may not have write access to the socket.
+  * Ensure `user: "${UID}:${GID}"` is set
+  * or check the socket permissions on the host
+
+* **file not found (mounts):**
+In a DooD environment, bind mount paths are interpreted as host paths. If the path inside the container does not match the host path, the mount will fail. Please verify the "Mirror Mount" configuration described above.
+
 ## Requirements
 
-* **Go:** 1.22+
+* **Go:** 1.24+
 * **Docker Engine:** API version 1.40+
 * **OS:** Linux, macOS (Docker Desktop), Windows (WSL2 recommended)
 

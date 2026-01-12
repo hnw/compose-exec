@@ -41,12 +41,21 @@ func LoadProject(ctx context.Context, dir string, files ...string) (*types.Proje
 	}
 
 	project, err := loader.LoadWithContext(ctx, cd, func(opts *loader.Options) {
-		// Compose v2 defaults. We do not implement build; project will still load.
+		// Try loading without forcing a project name, so that 'name:' in YAML takes precedence.
 		opts.SkipNormalization = false
-		name := filepath.Base(absDir)
-		opts.SetProjectName(name, true)
 		opts.Profiles = []string{"*"}
 	})
+	if err != nil {
+		project, err = loader.LoadWithContext(ctx, cd, func(opts *loader.Options) {
+			// If loading failed (likely due to missing project name in YAML),
+			// fallback to using the directory name with standard normalization.
+			opts.SkipNormalization = false
+			opts.Profiles = []string{"*"}
+			name := filepath.Base(absDir)
+			opts.SetProjectName(name, true)
+		})
+	}
+
 	if err != nil {
 		return nil, err
 	}
