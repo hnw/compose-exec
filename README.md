@@ -58,7 +58,7 @@ func main() {
 	svc := compose.From("db")
 
 	// 2. Define command (Empty args = use image default command)
-	cmd := svc.Command("")
+	cmd := svc.Command()
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 

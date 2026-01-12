@@ -535,3 +535,108 @@ func containsCapability(ss []string, want string) bool {
 	}
 	return false
 }
+
+func TestCommand_EdgeCases(t *testing.T) {
+	t.Run("CaseA_DefaultCommand_UsesYAMLCommand", func(t *testing.T) {
+		yaml := "" +
+			"services:\n" +
+			"  s:\n" +
+			"    image: alpine:latest\n" +
+			"    command: [\"sh\", \"-c\", \"echo -n from-yaml\"]\n"
+
+		_, proj := setupIntegrationWithComposeYAML(t, yaml)
+		svc, err := FromProject(proj, "s")
+		if err != nil {
+			t.Fatalf("FromProject: %v", err)
+		}
+
+		cmd := svc.Command()
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		out, err := cmd.Output(ctx)
+		if err != nil {
+			t.Fatalf("Output: %v", err)
+		}
+		if got := strings.TrimSpace(string(out)); got != "from-yaml" {
+			t.Fatalf("stdout=%q want=%q", got, "from-yaml")
+		}
+	})
+
+	t.Run("CaseA_DefaultCommand_UsesImageDefaultWhenNoYAMLCommand", func(t *testing.T) {
+		// hello-world prints and exits using image defaults (no service.command).
+		yaml := "" +
+			"services:\n" +
+			"  s:\n" +
+			"    image: hello-world:latest\n"
+
+		_, proj := setupIntegrationWithComposeYAML(t, yaml)
+		svc, err := FromProject(proj, "s")
+		if err != nil {
+			t.Fatalf("FromProject: %v", err)
+		}
+
+		cmd := svc.Command()
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		out, err := cmd.Output(ctx)
+		if err != nil {
+			t.Fatalf("Output: %v", err)
+		}
+		if !strings.Contains(string(out), "Hello from Docker!") {
+			t.Fatalf("stdout=%q", string(out))
+		}
+	})
+
+	t.Run("CaseB_NormalArgs_EchoHello", func(t *testing.T) {
+		_, svc := setupIntegration(t)
+		cmd := svc.Command("echo", "hello")
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		out, err := cmd.Output(ctx)
+		if err != nil {
+			t.Fatalf("Output: %v", err)
+		}
+		if got := strings.TrimSpace(string(out)); got != "hello" {
+			t.Fatalf("stdout=%q want=%q", got, "hello")
+		}
+	})
+
+	t.Run("CaseC_EmptyStringCommand_Errors", func(t *testing.T) {
+		_, svc := setupIntegration(t)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		if err := svc.Command("").Run(ctx); err == nil {
+			t.Fatalf("expected error")
+		}
+		if err := svc.Command("", "arg").Run(ctx); err == nil {
+			t.Fatalf("expected error")
+		}
+	})
+
+	t.Run("CaseD_Priority_ExplicitOverridesYAMLCommand", func(t *testing.T) {
+		yaml := "" +
+			"services:\n" +
+			"  s:\n" +
+			"    image: alpine:latest\n" +
+			"    command: [\"sleep\", \"10\"]\n"
+
+		_, proj := setupIntegrationWithComposeYAML(t, yaml)
+		svc, err := FromProject(proj, "s")
+		if err != nil {
+			t.Fatalf("FromProject: %v", err)
+		}
+
+		cmd := svc.Command("echo", "override")
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		out, err := cmd.Output(ctx)
+		if err != nil {
+			t.Fatalf("Output: %v", err)
+		}
+		if got := strings.TrimSpace(string(out)); got != "override" {
+			t.Fatalf("stdout=%q want=%q", got, "override")
+		}
+	})
+}

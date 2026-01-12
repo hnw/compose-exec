@@ -84,15 +84,14 @@ func FromProject(project *types.Project, serviceName string) (*Service, error) {
 	return s, nil
 }
 
-// Command returns a Cmd to execute the given command name and arguments in the service.
-func (s *Service) Command(name string, arg ...string) *Cmd {
-	args := make([]string, 0, 1+len(arg))
-	args = append(args, name)
-	args = append(args, arg...)
-
+// Command returns a Cmd to execute the given command arguments in the service.
+//
+// When called with zero args, Docker Engine/image defaults (or YAML service.command
+// via command resolution) will be used.
+func (s *Service) Command(arg ...string) *Cmd {
+	args := append([]string(nil), arg...)
 	return &Cmd{
 		Service: s.config,
-		Path:    name,
 		Args:    args,
 		loadErr: s.loadErr,
 		service: s,

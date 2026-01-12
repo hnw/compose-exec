@@ -11,10 +11,12 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
+	"unicode"
 
 	"github.com/compose-spec/compose-go/v2/types"
 	cerrdefs "github.com/containerd/errdefs"
@@ -32,7 +34,6 @@ import (
 type Cmd struct {
 	// Public fields
 	Service types.ServiceConfig
-	Path    string
 	Args    []string
 	Env     []string
 
@@ -59,6 +60,37 @@ type Cmd struct {
 	signalStop  func()
 
 	stderrBuf bytes.Buffer
+}
+
+// String returns a human-friendly representation of the command.
+//
+// When Args is empty, it returns "<default>" to indicate that Docker Engine/image
+// defaults (or YAML service.command via resolution) will be used.
+func (c *Cmd) String() string {
+	if len(c.Args) == 0 {
+		return "<default>"
+	}
+	parts := make([]string, 0, len(c.Args))
+	for _, a := range c.Args {
+		if needsQuoting(a) {
+			parts = append(parts, strconv.Quote(a))
+			continue
+		}
+		parts = append(parts, a)
+	}
+	return strings.Join(parts, " ")
+}
+
+func needsQuoting(s string) bool {
+	if s == "" {
+		return true
+	}
+	for _, r := range s {
+		if unicode.IsSpace(r) || r == '"' || r == '\\' {
+			return true
+		}
+	}
+	return false
 }
 
 // Run starts the container and waits for it to exit, similar to (*exec.Cmd).Run.
@@ -91,17 +123,11 @@ func (c *Cmd) ensureService() {
 
 func (c *Cmd) resolveCommand() {
 	// Command resolution priority:
-	// 1) Explicit args/path
+	// 1) Explicit args
 	// 2) Service.Command from YAML
 	// 3) Delegate to image defaults (no error)
-	if len(c.Args) == 0 && c.Path != "" {
-		c.Args = []string{c.Path}
-	}
 	if len(c.Args) == 0 && len(c.Service.Command) > 0 {
 		c.Args = []string(c.Service.Command)
-	}
-	if c.Path == "" && len(c.Args) > 0 {
-		c.Path = c.Args[0]
 	}
 }
 
@@ -379,6 +405,7 @@ func (c *Cmd) storeWait(dc dockerAPI, id string) {
 }
 
 // Start creates and starts the container for the configured service command.
+//
 //nolint:gocyclo // Orchestrates container lifecycle with explicit error handling.
 func (c *Cmd) Start(ctx context.Context) (startErr error) {
 	if c.loadErr != nil {

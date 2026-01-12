@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"testing"
 	"time"
@@ -210,4 +211,44 @@ func TestStopAndKill_KillsOnStopError(t *testing.T) {
 	if fd.killCalls != 1 {
 		t.Fatalf("killCalls=%d", fd.killCalls)
 	}
+}
+
+func TestCmd_resolveCommand_FallbackOnlyWhenArgsEmpty(t *testing.T) {
+	svc := types.ServiceConfig{Command: types.ShellCommand{"echo", "from-yaml"}}
+
+	t.Run("nil args falls back", func(t *testing.T) {
+		c := &Cmd{Service: svc}
+		c.resolveCommand()
+		want := []string{"echo", "from-yaml"}
+		if !reflect.DeepEqual(c.Args, want) {
+			t.Fatalf("Args=%v want=%v", c.Args, want)
+		}
+	})
+
+	t.Run("empty slice falls back", func(t *testing.T) {
+		c := &Cmd{Service: svc, Args: []string{}}
+		c.resolveCommand()
+		want := []string{"echo", "from-yaml"}
+		if !reflect.DeepEqual(c.Args, want) {
+			t.Fatalf("Args=%v want=%v", c.Args, want)
+		}
+	})
+
+	t.Run("explicit args are not overridden", func(t *testing.T) {
+		c := &Cmd{Service: svc, Args: []string{"echo", "explicit"}}
+		c.resolveCommand()
+		want := []string{"echo", "explicit"}
+		if !reflect.DeepEqual(c.Args, want) {
+			t.Fatalf("Args=%v want=%v", c.Args, want)
+		}
+	})
+
+	t.Run("empty-string arg is not treated as default", func(t *testing.T) {
+		c := &Cmd{Service: svc, Args: []string{""}}
+		c.resolveCommand()
+		want := []string{""}
+		if !reflect.DeepEqual(c.Args, want) {
+			t.Fatalf("Args=%v want=%v", c.Args, want)
+		}
+	})
 }
