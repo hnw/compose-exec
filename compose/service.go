@@ -90,7 +90,7 @@ func FromProject(project *types.Project, serviceName string) (*Service, error) {
 // Command returns a Cmd to execute the given command arguments in the service.
 //
 // When called with zero args, Docker Engine/image defaults (or YAML service.command
-// via command resolution) will be used.
+// via command resolution) will be used. Use CommandContext to bind a context.
 func (s *Service) Command(arg ...string) *Cmd {
 	args := append([]string(nil), arg...)
 	return &Cmd{
@@ -98,5 +98,23 @@ func (s *Service) Command(arg ...string) *Cmd {
 		Args:    args,
 		loadErr: s.loadErr,
 		service: s,
+	}
+}
+
+// CommandContext returns a Cmd to execute the given command arguments in the service,
+// bound to the provided context for lifecycle cancellation.
+//
+// It panics if ctx is nil, matching os/exec.CommandContext behavior.
+func (s *Service) CommandContext(ctx context.Context, arg ...string) *Cmd {
+	if ctx == nil {
+		panic("nil Context")
+	}
+	args := append([]string(nil), arg...)
+	return &Cmd{
+		Service: s.config,
+		Args:    args,
+		loadErr: s.loadErr,
+		service: s,
+		ctx:     ctx,
 	}
 }

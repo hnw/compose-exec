@@ -72,22 +72,23 @@ func main() {
 	svc := compose.From("db")
 
 	// 2. Define command (Empty args = use image default command)
-	cmd := svc.Command()
+	// Bind lifecycle to context
+	cmd := svc.CommandContext(ctx)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
 	// 3. Start the container asynchronously
-	if err := cmd.Start(ctx); err != nil {
+	if err := cmd.Start(); err != nil {
 		panic(err)
 	}
 
 	// Ensure container is removed when function exits
-	defer cmd.Wait(ctx)
+	defer cmd.Wait()
 
 	// 4. ✨ Wait for Healthcheck
 	// Uses the healthcheck defined in your YAML. No more arbitrary "sleep 10".
 	fmt.Println("Waiting for DB to be healthy...")
-	if err := cmd.WaitUntilHealthy(ctx); err != nil {
+	if err := cmd.WaitUntilHealthy(); err != nil {
 		panic(err)
 	}
 

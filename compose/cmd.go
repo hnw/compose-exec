@@ -44,6 +44,8 @@ type Cmd struct {
 
 	// Delayed error propagated from Service initialization.
 	loadErr error
+	// ctx is the lifecycle context (set by CommandContext).
+	ctx context.Context
 
 	// Internal
 	service *Service
@@ -97,15 +99,23 @@ func needsQuoting(s string) bool {
 	return false
 }
 
+func (c *Cmd) contextOrBackground() context.Context {
+	if c.ctx != nil {
+		return c.ctx
+	}
+	return context.Background()
+}
+
 // Run starts the container and waits for it to exit, similar to (*exec.Cmd).Run.
-func (c *Cmd) Run(ctx context.Context) error {
+// If created via CommandContext, its context controls cancellation.
+func (c *Cmd) Run() error {
 	if c.loadErr != nil {
 		return c.loadErr
 	}
-	if err := c.Start(ctx); err != nil {
+	if err := c.Start(); err != nil {
 		return err
 	}
-	return c.Wait(ctx)
+	return c.Wait()
 }
 
 func (c *Cmd) markStarted() error {
@@ -336,17 +346,16 @@ func applyHostSecurityConfig(hostCfg *container.HostConfig, svc types.ServiceCon
 }
 
 // WaitUntilHealthy blocks until the started container becomes healthy.
+// If created via CommandContext, its context controls cancellation.
 //
 // Strict behavior:
 // - If the service has no healthcheck defined, it returns an error immediately.
 // - If the container becomes unhealthy or stops running, it returns an error immediately.
-func (c *Cmd) WaitUntilHealthy(ctx context.Context) error {
+func (c *Cmd) WaitUntilHealthy() error {
 	if c.loadErr != nil {
 		return c.loadErr
 	}
-	if ctx == nil {
-		return errors.New("compose: ctx is required")
-	}
+	ctx := c.contextOrBackground()
 	if c.Service.HealthCheck == nil {
 		return errors.New("compose: healthcheck is not defined for this service")
 	}
@@ -463,17 +472,14 @@ func (c *Cmd) storeWait(dc dockerAPI, id string) {
 // Start creates and starts the container for the configured service command.
 //
 //nolint:gocyclo // Orchestrates container lifecycle with explicit error handling.
-func (c *Cmd) Start(ctx context.Context) (startErr error) {
+func (c *Cmd) Start() (startErr error) {
 	if c.loadErr != nil {
 		return c.loadErr
 	}
 	if err := c.markStarted(); err != nil {
 		return err
 	}
-
-	if ctx == nil {
-		return errors.New("compose: ctx is required")
-	}
+	ctx := c.contextOrBackground()
 	c.ensureService()
 	c.resolveCommand()
 	if c.Service.Build != nil {
@@ -831,10 +837,9 @@ func waitForIO(
 }
 
 // Wait waits for the started container to exit and returns its exit status.
-func (c *Cmd) Wait(ctx context.Context) error {
-	if ctx == nil {
-		return errors.New("compose: ctx is required")
-	}
+// If created via CommandContext, its context controls cancellation.
+func (c *Cmd) Wait() error {
+	ctx := c.contextOrBackground()
 	defer c.closeDockerIfOwned()
 	st, err := c.snapshotWaitState()
 	if err != nil {
@@ -870,7 +875,8 @@ func (c *Cmd) Wait(ctx context.Context) error {
 }
 
 // Output runs the command and returns its standard output.
-func (c *Cmd) Output(ctx context.Context) ([]byte, error) {
+// If created via CommandContext, its context controls cancellation.
+func (c *Cmd) Output() ([]byte, error) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	c.Stdout = &stdout
@@ -878,7 +884,7 @@ func (c *Cmd) Output(ctx context.Context) ([]byte, error) {
 	c.captureStderr = true
 	defer func() { c.captureStderr = false }()
 
-	err := c.Run(ctx)
+	err := c.Run()
 	if err != nil {
 		// Prefer stderr captured during run.
 		if ee := (*ExitError)(nil); errors.As(err, &ee) {
@@ -890,14 +896,15 @@ func (c *Cmd) Output(ctx context.Context) ([]byte, error) {
 }
 
 // CombinedOutput runs the command and returns its combined standard output and standard error.
-func (c *Cmd) CombinedOutput(ctx context.Context) ([]byte, error) {
+// If created via CommandContext, its context controls cancellation.
+func (c *Cmd) CombinedOutput() ([]byte, error) {
 	var buf bytes.Buffer
 	c.Stdout = &buf
 	c.Stderr = &buf
 	c.captureStderr = true
 	defer func() { c.captureStderr = false }()
 
-	err := c.Run(ctx)
+	err := c.Run()
 	return buf.Bytes(), err
 }
 

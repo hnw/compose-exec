@@ -72,23 +72,24 @@ func main() {
 	svc := compose.From("db")
 
 	// 2. コマンド定義（引数なし＝イメージのデフォルトコマンドを使用）
-	cmd := svc.Command()
+	// Context にライフサイクルを紐付ける
+	cmd := svc.CommandContext(ctx)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
 	// 3. コンテナを起動 (Start)
-	if err := cmd.Start(ctx); err != nil {
+	if err := cmd.Start(); err != nil {
 		panic(err)
 	}
 
 	// 関数終了時に確実にコンテナを削除する
-	defer cmd.Wait(ctx)
+	defer cmd.Wait()
 
 	// 4. ✨ ヘルスチェック通過を待機
 	// docker-compose.yml の healthcheck 定義を使用します。
 	// "sleep 10" のような不安定な待機処理は不要です。
 	fmt.Println("Waiting for DB to be healthy...")
-	if err := cmd.WaitUntilHealthy(ctx); err != nil {
+	if err := cmd.WaitUntilHealthy(); err != nil {
 		panic(err)
 	}
 

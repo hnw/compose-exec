@@ -26,18 +26,18 @@ func main() {
 	`
 
 	fmt.Println("[Controller] Launching 'Slow-Start' Target Container...")
-	cmd := svc.Command("sh", "-c", serverCmd)
+	cmd := svc.CommandContext(ctx, "sh", "-c", serverCmd)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
 	defer func() {
 		fmt.Println("\n[Controller] Cleaning up target container...")
 		cancel()
-		_ = cmd.Wait(ctx)
+		_ = cmd.Wait()
 		fmt.Println("[Controller] Cleanup done.")
 	}()
 
-	if err := cmd.Start(ctx); err != nil {
+	if err := cmd.Start(); err != nil {
 		panic(err)
 	}
 
@@ -55,7 +55,7 @@ func main() {
 	fmt.Println("[Controller] 2. Waiting for Target (Port 8080) to be Ready...")
 	startWait := time.Now()
 
-	if waitErr := cmd.WaitUntilHealthy(ctx); waitErr != nil {
+	if waitErr := cmd.WaitUntilHealthy(); waitErr != nil {
 		panic(waitErr)
 	}
 

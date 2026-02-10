@@ -154,10 +154,10 @@ func randToken(t *testing.T) string {
 func TestIntegration_BasicExecution(t *testing.T) {
 	_, svc := setupIntegration(t)
 
-	cmd := svc.Command("sh", "-c", "echo hello world")
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	out, err := cmd.Output(ctx)
+	cmd := svc.CommandContext(ctx, "sh", "-c", "echo hello world")
+	out, err := cmd.Output()
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -174,10 +174,10 @@ func TestIntegration_BindMountAndPathResolution(t *testing.T) {
 		t.Fatalf("write host_token.txt: %v", err)
 	}
 
-	cmd := svc.Command("cat", "/data/host_token.txt")
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	out, err := cmd.Output(ctx)
+	cmd := svc.CommandContext(ctx, "cat", "/data/host_token.txt")
+	out, err := cmd.Output()
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -220,17 +220,17 @@ func TestIntegration_NamedVolumePersistence(t *testing.T) {
 
 	token := randToken(t)
 
-	cmd1 := svc.Command("sh", "-c", fmt.Sprintf("echo %s > /data/token.txt", token))
 	ctx1, cancel1 := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel1()
-	if err := cmd1.Run(ctx1); err != nil {
+	cmd1 := svc.CommandContext(ctx1, "sh", "-c", fmt.Sprintf("echo %s > /data/token.txt", token))
+	if err := cmd1.Run(); err != nil {
 		t.Fatalf("first Run: %v", err)
 	}
 
-	cmd2 := svc.Command("cat", "/data/token.txt")
 	ctx2, cancel2 := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel2()
-	out, err := cmd2.Output(ctx2)
+	cmd2 := svc.CommandContext(ctx2, "cat", "/data/token.txt")
+	out, err := cmd2.Output()
 	if err != nil {
 		t.Fatalf("second Output: %v", err)
 	}
@@ -243,11 +243,11 @@ func TestIntegration_NamedVolumePersistence(t *testing.T) {
 func TestIntegration_EnvironmentVariableInjection(t *testing.T) {
 	_, svc := setupIntegration(t)
 
-	cmd := svc.Command("sh", "-c", "echo $TEST_VAR")
-	cmd.Env = []string{"TEST_VAR=integration_success"}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	out, err := cmd.Output(ctx)
+	cmd := svc.CommandContext(ctx, "sh", "-c", "echo $TEST_VAR")
+	cmd.Env = []string{"TEST_VAR=integration_success"}
+	out, err := cmd.Output()
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -259,10 +259,10 @@ func TestIntegration_EnvironmentVariableInjection(t *testing.T) {
 func TestIntegration_ExitCodePropagation(t *testing.T) {
 	_, svc := setupIntegration(t)
 
-	cmd := svc.Command("sh", "-c", "exit 42")
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	err := cmd.Run(ctx)
+	cmd := svc.CommandContext(ctx, "sh", "-c", "exit 42")
+	err := cmd.Run()
 	if err == nil {
 		t.Fatalf("expected error")
 	}
@@ -281,9 +281,8 @@ func TestIntegration_SignalPropagationZombiePrevention(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	cmd := svc.Command("sleep", "10")
-
-	if err := cmd.Start(ctx); err != nil {
+	cmd := svc.CommandContext(ctx, "sleep", "10")
+	if err := cmd.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 
@@ -291,7 +290,7 @@ func TestIntegration_SignalPropagationZombiePrevention(t *testing.T) {
 	cancelAt := time.Now()
 	cancel()
 
-	err := cmd.Wait(ctx)
+	err := cmd.Wait()
 	elapsed := time.Since(cancelAt)
 	if elapsed >= 2*time.Second {
 		t.Fatalf("Wait took too long: %s", elapsed)
@@ -331,9 +330,9 @@ func TestIntegration_Concurrency(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			cmd := svc.Command("sh", "-c", fmt.Sprintf("echo -n ok-%d", i))
+			cmd := svc.CommandContext(ctx, "sh", "-c", fmt.Sprintf("echo -n ok-%d", i))
 			cmd.docker = cli
-			out, err := cmd.Output(ctx)
+			out, err := cmd.Output()
 			if err != nil {
 				errCh <- fmt.Errorf("cmd %d: %w", i, err)
 				return
@@ -362,15 +361,15 @@ func TestIntegration_LargeEnvironmentVariables(t *testing.T) {
 	valB := strings.Repeat("b", 16*1024)
 	valC := strings.Repeat("c", 16*1024)
 
-	cmd := svc.Command("sh", "-c", "echo -n ${#BIG_A},${#BIG_B},${#BIG_C}")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := svc.CommandContext(ctx, "sh", "-c", "echo -n ${#BIG_A},${#BIG_B},${#BIG_C}")
 	cmd.Env = []string{
 		"BIG_A=" + valA,
 		"BIG_B=" + valB,
 		"BIG_C=" + valC,
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	out, err := cmd.Output(ctx)
+	out, err := cmd.Output()
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -384,10 +383,10 @@ func TestIntegration_LargeEnvironmentVariables(t *testing.T) {
 func TestIntegration_CommandNotFound(t *testing.T) {
 	_, svc := setupIntegration(t)
 
-	cmd := svc.Command("this-command-should-not-exist")
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	err := cmd.Run(ctx)
+	cmd := svc.CommandContext(ctx, "this-command-should-not-exist")
+	err := cmd.Run()
 	if err == nil {
 		t.Fatalf("expected error")
 	}
@@ -449,8 +448,8 @@ func TestIntegration_ExampleScenarioRegression(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	siblingCmd := From("target").Command("cat", "/etc/os-release")
-	out, err := siblingCmd.Output(ctx)
+	siblingCmd := From("target").CommandContext(ctx, "cat", "/etc/os-release")
+	out, err := siblingCmd.Output()
 	if err != nil {
 		t.Fatalf("sibling container ('target') Run: %v", err)
 	}
@@ -479,13 +478,12 @@ func TestIntegration_WaitUntilHealthy(t *testing.T) {
 		t.Fatalf("FromProject: %v", err)
 	}
 
-	// Keep the container alive until the healthcheck flips to healthy.
-	cmd := svc.Command("sh", "-c", "while [ ! -f /data/healthy ]; do sleep 0.1; done; sleep 1")
-
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	if err := cmd.Start(ctx); err != nil {
+	// Keep the container alive until the healthcheck flips to healthy.
+	cmd := svc.CommandContext(ctx, "sh", "-c", "while [ ! -f /data/healthy ]; do sleep 0.1; done; sleep 1")
+	if err := cmd.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 
@@ -495,10 +493,10 @@ func TestIntegration_WaitUntilHealthy(t *testing.T) {
 		_ = os.WriteFile(filepath.Join(dir, "healthy"), []byte("ok"), 0o644)
 	}()
 
-	if err := cmd.WaitUntilHealthy(ctx); err != nil {
+	if err := cmd.WaitUntilHealthy(); err != nil {
 		t.Fatalf("WaitUntilHealthy: %v", err)
 	}
-	if err := cmd.Wait(ctx); err != nil {
+	if err := cmd.Wait(); err != nil {
 		t.Fatalf("Wait: %v", err)
 	}
 }
@@ -529,7 +527,7 @@ func TestIntegration_PrivilegedAndCapabilitiesMapping(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FromProject(priv): %v", err)
 	}
-	if err := privSvc.Command("sh", "-c", mountCmd).Run(ctx); err != nil {
+	if err := privSvc.CommandContext(ctx, "sh", "-c", mountCmd).Run(); err != nil {
 		msg := strings.ToLower(err.Error())
 		if strings.Contains(msg, "operation not permitted") || strings.Contains(msg, "permission denied") {
 			t.Skipf("privileged operation unsupported in this environment: %v", err)
@@ -541,7 +539,7 @@ func TestIntegration_PrivilegedAndCapabilitiesMapping(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FromProject(unpriv): %v", err)
 	}
-	if err := unprivSvc.Command("sh", "-c", mountCmd).Run(ctx); err == nil {
+	if err := unprivSvc.CommandContext(ctx, "sh", "-c", mountCmd).Run(); err == nil {
 		t.Fatalf("expected unprivileged mount to fail")
 	}
 
@@ -550,8 +548,8 @@ func TestIntegration_PrivilegedAndCapabilitiesMapping(t *testing.T) {
 		t.Fatalf("FromProject(caps): %v", err)
 	}
 
-	capsCmd := capsSvc.Command("sleep", "2")
-	if err := capsCmd.Start(ctx); err != nil {
+	capsCmd := capsSvc.CommandContext(ctx, "sleep", "2")
+	if err := capsCmd.Start(); err != nil {
 		t.Fatalf("caps Start: %v", err)
 	}
 	st, err := capsCmd.snapshotWaitState()
@@ -573,7 +571,7 @@ func TestIntegration_PrivilegedAndCapabilitiesMapping(t *testing.T) {
 	if !containsCapability(capDrop, "MKNOD") {
 		t.Fatalf("CapDrop=%v (expected MKNOD)", capDrop)
 	}
-	if err := capsCmd.Wait(ctx); err != nil {
+	if err := capsCmd.Wait(); err != nil {
 		t.Fatalf("caps Wait: %v", err)
 	}
 }
@@ -595,8 +593,8 @@ func TestIntegration_DownRemovesContainers(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	cmd := svc.Command()
-	if err := cmd.Start(ctx); err != nil {
+	cmd := svc.CommandContext(ctx)
+	if err := cmd.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 
@@ -628,9 +626,7 @@ func TestIntegration_DownRemovesContainers(t *testing.T) {
 		t.Fatalf("unexpected inspect error: %v", err)
 	}
 
-	waitCtx, cancelWait := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancelWait()
-	_ = cmd.Wait(waitCtx)
+	_ = cmd.Wait()
 }
 
 func containsCapability(ss []string, want string) bool {
@@ -659,10 +655,10 @@ func TestCommand_EdgeCases(t *testing.T) {
 			t.Fatalf("FromProject: %v", err)
 		}
 
-		cmd := svc.Command()
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		out, err := cmd.Output(ctx)
+		cmd := svc.CommandContext(ctx)
+		out, err := cmd.Output()
 		if err != nil {
 			t.Fatalf("Output: %v", err)
 		}
@@ -684,10 +680,10 @@ func TestCommand_EdgeCases(t *testing.T) {
 			t.Fatalf("FromProject: %v", err)
 		}
 
-		cmd := svc.Command()
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		out, err := cmd.Output(ctx)
+		cmd := svc.CommandContext(ctx)
+		out, err := cmd.Output()
 		if err != nil {
 			t.Fatalf("Output: %v", err)
 		}
@@ -698,10 +694,10 @@ func TestCommand_EdgeCases(t *testing.T) {
 
 	t.Run("CaseB_NormalArgs_EchoHello", func(t *testing.T) {
 		_, svc := setupIntegration(t)
-		cmd := svc.Command("echo", "hello")
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		out, err := cmd.Output(ctx)
+		cmd := svc.CommandContext(ctx, "echo", "hello")
+		out, err := cmd.Output()
 		if err != nil {
 			t.Fatalf("Output: %v", err)
 		}
@@ -716,10 +712,10 @@ func TestCommand_EdgeCases(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
-		if err := svc.Command("").Run(ctx); err == nil {
+		if err := svc.CommandContext(ctx, "").Run(); err == nil {
 			t.Fatalf("expected error")
 		}
-		if err := svc.Command("", "arg").Run(ctx); err == nil {
+		if err := svc.CommandContext(ctx, "", "arg").Run(); err == nil {
 			t.Fatalf("expected error")
 		}
 	})
@@ -737,10 +733,10 @@ func TestCommand_EdgeCases(t *testing.T) {
 			t.Fatalf("FromProject: %v", err)
 		}
 
-		cmd := svc.Command("echo", "override")
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
-		out, err := cmd.Output(ctx)
+		cmd := svc.CommandContext(ctx, "echo", "override")
+		out, err := cmd.Output()
 		if err != nil {
 			t.Fatalf("Output: %v", err)
 		}
