@@ -68,16 +68,13 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// 1. Load "db" service config from docker-compose.yml
-	svc := compose.From("db")
-
-	// 2. Define command (Empty args = use image default command)
+	// 1. Define command bound to the "db" service (Empty args = use image default command)
 	// Bind lifecycle to context
-	cmd := svc.CommandContext(ctx)
+	cmd := compose.CommandContext(ctx, "db")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
-	// 3. Start the container asynchronously
+	// 2. Start the container asynchronously
 	if err := cmd.Start(); err != nil {
 		panic(err)
 	}
@@ -85,14 +82,14 @@ func main() {
 	// Ensure container is removed when function exits
 	defer cmd.Wait()
 
-	// 4. ✨ Wait for Healthcheck
+	// 3. ✨ Wait for Healthcheck
 	// Uses the healthcheck defined in your YAML. No more arbitrary "sleep 10".
 	fmt.Println("Waiting for DB to be healthy...")
 	if err := cmd.WaitUntilHealthy(); err != nil {
 		panic(err)
 	}
 
-	// 5. Run your tests or logic
+	// 4. Run your tests or logic
 	fmt.Println("DB is ready! Running tests...")
 	// runTests()
 }

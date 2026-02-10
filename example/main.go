@@ -15,8 +15,6 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	svc := compose.From("target")
-
 	serverCmd := `
 		echo "[Target] Initializing Backend Service...";
 		sleep 3;
@@ -26,7 +24,7 @@ func main() {
 	`
 
 	fmt.Println("[Controller] Launching 'Slow-Start' Target Container...")
-	cmd := svc.CommandContext(ctx, "sh", "-c", serverCmd)
+	cmd := compose.CommandContext(ctx, "target", "sh", "-c", serverCmd)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 

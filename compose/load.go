@@ -16,7 +16,7 @@ import (
 // (the latter only if it exists).
 //
 // Environment variable resolution follows compose-go behavior, including .env in dir.
-func LoadProject(ctx context.Context, dir string, files ...string) (*types.Project, error) {
+func LoadProject(ctx context.Context, dir string, files ...string) (*Project, error) {
 	if dir == "" {
 		return nil, errors.New("dir is required")
 	}
@@ -59,7 +59,7 @@ func LoadProject(ctx context.Context, dir string, files ...string) (*types.Proje
 	if err != nil {
 		return nil, err
 	}
-	return project, nil
+	return (*Project)(project), nil
 }
 
 func defaultComposeFiles(dir string, files []string) []string {

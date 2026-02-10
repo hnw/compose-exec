@@ -17,7 +17,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/compose-spec/compose-go/v2/types"
 	cerrdefs "github.com/containerd/errdefs"
 	dockertypes "github.com/docker/docker/api/types"
 	"github.com/docker/docker/client"
@@ -83,9 +82,9 @@ func setupIntegration(t *testing.T) (dir string, svc *Service) {
 		t.Fatalf("LoadProject: %v", err)
 	}
 
-	svc, err = FromProject(proj, "alpine")
+	svc, err = proj.Service("alpine")
 	if err != nil {
-		t.Fatalf("FromProject: %v", err)
+		t.Fatalf("Project.Service: %v", err)
 	}
 
 	// Ensure per-test Compose resources (networks, etc.) are removed.
@@ -99,7 +98,7 @@ func setupIntegration(t *testing.T) (dir string, svc *Service) {
 	return dir, svc
 }
 
-func setupIntegrationWithComposeYAML(t *testing.T, yaml string) (dir string, proj *types.Project) {
+func setupIntegrationWithComposeYAML(t *testing.T, yaml string) (dir string, proj *Project) {
 	t.Helper()
 	requireDocker(t)
 
@@ -200,9 +199,9 @@ func TestIntegration_NamedVolumePersistence(t *testing.T) {
 
 	_, proj := setupIntegrationWithComposeYAML(t, yaml)
 
-	svc, err := FromProject(proj, "alpine")
+	svc, err := proj.Service("alpine")
 	if err != nil {
-		t.Fatalf("FromProject: %v", err)
+		t.Fatalf("Project.Service: %v", err)
 	}
 
 	// Cleanup the created named volume (Down() intentionally does not remove volumes).
@@ -410,7 +409,7 @@ func TestIntegration_CommandNotFound(t *testing.T) {
 }
 
 func TestIntegration_ExampleScenarioRegression(t *testing.T) {
-	// Reproduce the example: Controller runs locally, then Target runs via compose.From("sibling").
+	// Reproduce the example: Controller runs locally, then Target runs via compose.Command("target").
 	// Keep it portable across macOS by falling back if /etc/os-release isn't present.
 
 	// Controller (self)
@@ -448,7 +447,7 @@ func TestIntegration_ExampleScenarioRegression(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	siblingCmd := From("target").CommandContext(ctx, "cat", "/etc/os-release")
+	siblingCmd := CommandContext(ctx, "target", "cat", "/etc/os-release")
 	out, err := siblingCmd.Output()
 	if err != nil {
 		t.Fatalf("sibling container ('target') Run: %v", err)
@@ -473,9 +472,9 @@ func TestIntegration_WaitUntilHealthy(t *testing.T) {
 		"      retries: 30\n"
 
 	dir, proj := setupIntegrationWithComposeYAML(t, yaml)
-	svc, err := FromProject(proj, "hc")
+	svc, err := proj.Service("hc")
 	if err != nil {
-		t.Fatalf("FromProject: %v", err)
+		t.Fatalf("Project.Service: %v", err)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -523,9 +522,9 @@ func TestIntegration_PrivilegedAndCapabilitiesMapping(t *testing.T) {
 
 	mountCmd := "mkdir -p /mnt && mount -t tmpfs tmpfs /mnt && umount /mnt"
 
-	privSvc, err := FromProject(proj, "priv")
+	privSvc, err := proj.Service("priv")
 	if err != nil {
-		t.Fatalf("FromProject(priv): %v", err)
+		t.Fatalf("Project.Service(priv): %v", err)
 	}
 	if err := privSvc.CommandContext(ctx, "sh", "-c", mountCmd).Run(); err != nil {
 		msg := strings.ToLower(err.Error())
@@ -535,17 +534,17 @@ func TestIntegration_PrivilegedAndCapabilitiesMapping(t *testing.T) {
 		t.Fatalf("privileged run: %v", err)
 	}
 
-	unprivSvc, err := FromProject(proj, "unpriv")
+	unprivSvc, err := proj.Service("unpriv")
 	if err != nil {
-		t.Fatalf("FromProject(unpriv): %v", err)
+		t.Fatalf("Project.Service(unpriv): %v", err)
 	}
 	if err := unprivSvc.CommandContext(ctx, "sh", "-c", mountCmd).Run(); err == nil {
 		t.Fatalf("expected unprivileged mount to fail")
 	}
 
-	capsSvc, err := FromProject(proj, "caps")
+	capsSvc, err := proj.Service("caps")
 	if err != nil {
-		t.Fatalf("FromProject(caps): %v", err)
+		t.Fatalf("Project.Service(caps): %v", err)
 	}
 
 	capsCmd := capsSvc.CommandContext(ctx, "sleep", "2")
@@ -585,9 +584,9 @@ func TestIntegration_DownRemovesContainers(t *testing.T) {
 
 	_, proj := setupIntegrationWithComposeYAML(t, yaml)
 
-	svc, err := FromProject(proj, "alpine")
+	svc, err := proj.Service("alpine")
 	if err != nil {
-		t.Fatalf("FromProject: %v", err)
+		t.Fatalf("Project.Service: %v", err)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -650,9 +649,9 @@ func TestCommand_EdgeCases(t *testing.T) {
 			"    command: [\"sh\", \"-c\", \"echo -n from-yaml\"]\n"
 
 		_, proj := setupIntegrationWithComposeYAML(t, yaml)
-		svc, err := FromProject(proj, "s")
+		svc, err := proj.Service("s")
 		if err != nil {
-			t.Fatalf("FromProject: %v", err)
+			t.Fatalf("Project.Service: %v", err)
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -675,9 +674,9 @@ func TestCommand_EdgeCases(t *testing.T) {
 			"    image: hello-world:latest\n"
 
 		_, proj := setupIntegrationWithComposeYAML(t, yaml)
-		svc, err := FromProject(proj, "s")
+		svc, err := proj.Service("s")
 		if err != nil {
-			t.Fatalf("FromProject: %v", err)
+			t.Fatalf("Project.Service: %v", err)
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -728,9 +727,9 @@ func TestCommand_EdgeCases(t *testing.T) {
 			"    command: [\"sleep\", \"10\"]\n"
 
 		_, proj := setupIntegrationWithComposeYAML(t, yaml)
-		svc, err := FromProject(proj, "s")
+		svc, err := proj.Service("s")
 		if err != nil {
-			t.Fatalf("FromProject: %v", err)
+			t.Fatalf("Project.Service: %v", err)
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)

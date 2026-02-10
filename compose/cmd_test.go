@@ -156,6 +156,24 @@ type nopReader struct{}
 
 func (n *nopReader) Read(_ []byte) (int, error) { return 0, io.EOF }
 
+type testEnvValue struct {
+	value    string
+	hasValue bool
+}
+
+func parseEnvSlice(ss []string) map[string]testEnvValue {
+	out := make(map[string]testEnvValue, len(ss))
+	for _, kv := range ss {
+		k, v, ok := splitEnv(kv)
+		if ok {
+			out[k] = testEnvValue{value: v, hasValue: true}
+			continue
+		}
+		out[kv] = testEnvValue{value: "", hasValue: false}
+	}
+	return out
+}
+
 func TestMergeEnv_OrderAndOverride(t *testing.T) {
 	got := mergeEnv(
 		[]string{"A=1", "B=2"},
@@ -170,6 +188,133 @@ func TestMergeEnv_OrderAndOverride(t *testing.T) {
 			t.Fatalf("idx=%d got=%q want=%q full=%v", i, got[i], want[i], got)
 		}
 	}
+}
+
+func TestCmd_Environ_MergeAndCopy(t *testing.T) {
+	v1 := "1"
+	v2 := "2"
+	svc := types.ServiceConfig{
+		Environment: types.MappingWithEquals{
+			"A": &v1,
+			"B": &v2,
+		},
+	}
+	c := &Cmd{
+		Service: svc,
+		Env:     []string{"B=20", "C=3"},
+	}
+
+	got := c.Environ()
+	gotMap := parseEnvSlice(got)
+
+	if ev, ok := gotMap["A"]; !ok || !ev.hasValue || ev.value != "1" {
+		t.Fatalf("env A=%v ok=%v", ev, ok)
+	}
+	if ev, ok := gotMap["B"]; !ok || !ev.hasValue || ev.value != "20" {
+		t.Fatalf("env B=%v ok=%v", ev, ok)
+	}
+	if ev, ok := gotMap["C"]; !ok || !ev.hasValue || ev.value != "3" {
+		t.Fatalf("env C=%v ok=%v", ev, ok)
+	}
+
+	got[0] = "Z=9"
+	if c.Env[0] != "B=20" {
+		t.Fatalf("Env mutated: %v", c.Env)
+	}
+}
+
+func TestCmd_StdoutPipe_Errors(t *testing.T) {
+	t.Run("already started", func(t *testing.T) {
+		c := &Cmd{}
+		_ = c.markStarted()
+		if _, err := c.StdoutPipe(); err == nil {
+			t.Fatalf("expected error")
+		}
+	})
+
+	t.Run("stdout set", func(t *testing.T) {
+		c := &Cmd{Stdout: io.Discard}
+		if _, err := c.StdoutPipe(); err == nil {
+			t.Fatalf("expected error")
+		}
+	})
+}
+
+func TestCmd_StderrPipe_Errors(t *testing.T) {
+	t.Run("already started", func(t *testing.T) {
+		c := &Cmd{}
+		_ = c.markStarted()
+		if _, err := c.StderrPipe(); err == nil {
+			t.Fatalf("expected error")
+		}
+	})
+
+	t.Run("stderr set", func(t *testing.T) {
+		c := &Cmd{Stderr: io.Discard}
+		if _, err := c.StderrPipe(); err == nil {
+			t.Fatalf("expected error")
+		}
+	})
+}
+
+func TestCmd_StdinPipe_Errors(t *testing.T) {
+	t.Run("already started", func(t *testing.T) {
+		c := &Cmd{}
+		_ = c.markStarted()
+		if _, err := c.StdinPipe(); err == nil {
+			t.Fatalf("expected error")
+		}
+	})
+
+	t.Run("stdin set", func(t *testing.T) {
+		c := &Cmd{Stdin: io.NopCloser(&nopReader{})}
+		if _, err := c.StdinPipe(); err == nil {
+			t.Fatalf("expected error")
+		}
+	})
+}
+
+func TestCmd_Pipes_CloseBehavior(t *testing.T) {
+	t.Run("stdout pipe closes", func(t *testing.T) {
+		c := &Cmd{}
+		r, err := c.StdoutPipe()
+		if err != nil {
+			t.Fatalf("StdoutPipe: %v", err)
+		}
+		c.closeStdoutPipe(nil)
+		buf := make([]byte, 1)
+		n, err := r.Read(buf)
+		if n != 0 || err != io.EOF {
+			t.Fatalf("read n=%d err=%v", n, err)
+		}
+	})
+
+	t.Run("stderr pipe closes", func(t *testing.T) {
+		c := &Cmd{}
+		r, err := c.StderrPipe()
+		if err != nil {
+			t.Fatalf("StderrPipe: %v", err)
+		}
+		c.closeStderrPipe(nil)
+		buf := make([]byte, 1)
+		n, err := r.Read(buf)
+		if n != 0 || err != io.EOF {
+			t.Fatalf("read n=%d err=%v", n, err)
+		}
+	})
+
+	t.Run("stdin pipe closes", func(t *testing.T) {
+		c := &Cmd{}
+		w, err := c.StdinPipe()
+		if err != nil {
+			t.Fatalf("StdinPipe: %v", err)
+		}
+		c.closeStdinPipe(nil)
+		if _, err := w.Write([]byte("x")); err == nil {
+			t.Fatalf("expected write error")
+		}
+		_ = w.Close()
+	})
 }
 
 func TestServiceMounts_RelativeSourceResolved(t *testing.T) {
@@ -232,14 +377,19 @@ func TestServiceMounts_NamedVolumeResolved(t *testing.T) {
 func TestCmd_ensureVolumes_CreatesTopLevelProjectVolumes(t *testing.T) {
 	fd := &fakeDocker{}
 
-	proj := &types.Project{
+	svcCfg := types.ServiceConfig{Name: "alpine", Image: "alpine:latest"}
+	proj := &Project{
 		Name: "myproj",
 		Volumes: types.Volumes{
 			"db_data": types.VolumeConfig{},
 		},
+		Services: types.Services{"alpine": svcCfg},
 	}
 
-	s := NewService(proj, types.ServiceConfig{Name: "alpine", Image: "alpine:latest"})
+	s, err := proj.Service("alpine")
+	if err != nil {
+		t.Fatalf("Project.Service: %v", err)
+	}
 
 	c := &Cmd{Service: s.config, service: s}
 
@@ -337,9 +487,12 @@ func TestWaitForExit_ClosedErrChStillWaitsForResp(t *testing.T) {
 }
 
 func TestContainerConfigs_AddsComposeLabels(t *testing.T) {
-	proj := &types.Project{Name: "proj"}
 	svc := types.ServiceConfig{Name: "svc", Image: "alpine:latest"}
-	s := NewService(proj, svc)
+	proj := &Project{Name: "proj", Services: types.Services{"svc": svc}}
+	s, err := proj.Service("svc")
+	if err != nil {
+		t.Fatalf("Project.Service: %v", err)
+	}
 
 	c := &Cmd{Service: s.config, service: s}
 	cfg, _ := c.containerConfigs(nil)
