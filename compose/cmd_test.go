@@ -14,6 +14,7 @@ import (
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/network"
+	"github.com/docker/docker/api/types/volume"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
@@ -22,6 +23,8 @@ type fakeDocker struct {
 	stopErr     bool
 	killCalls   int
 	removeCalls int
+
+	volumeCreateCalls []volume.CreateOptions
 }
 
 func (f *fakeDocker) ImageInspectWithRaw(
@@ -137,6 +140,14 @@ func (f *fakeDocker) NetworkRemove(_ context.Context, _ string) error {
 	return nil
 }
 
+func (f *fakeDocker) VolumeCreate(
+	_ context.Context,
+	options volume.CreateOptions,
+) (volume.Volume, error) {
+	f.volumeCreateCalls = append(f.volumeCreateCalls, options)
+	return volume.Volume{Name: options.Name}, nil
+}
+
 func (f *fakeDocker) Close() error {
 	return nil
 }
@@ -174,7 +185,7 @@ func TestServiceMounts_RelativeSourceResolved(t *testing.T) {
 		}},
 	}
 
-	mounts, err := serviceMounts(svc, "/tmp/project")
+	mounts, err := serviceMounts(svc, "/tmp/project", "proj")
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -188,6 +199,58 @@ func TestServiceMounts_RelativeSourceResolved(t *testing.T) {
 	}
 	if mounts[0].Target != "/work/data" {
 		t.Fatalf("target=%q", mounts[0].Target)
+	}
+}
+
+func TestServiceMounts_NamedVolumeResolved(t *testing.T) {
+	svc := types.ServiceConfig{
+		Volumes: []types.ServiceVolumeConfig{{
+			Type:   types.VolumeTypeVolume,
+			Source: "db_data",
+			Target: "/data",
+		}},
+	}
+
+	mounts, err := serviceMounts(svc, "/tmp/project", "myproj")
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if len(mounts) != 1 {
+		t.Fatalf("mounts=%d", len(mounts))
+	}
+	if mounts[0].Type != "volume" {
+		t.Fatalf("type=%q want=%q", mounts[0].Type, "volume")
+	}
+	if mounts[0].Source != "myproj_db_data" {
+		t.Fatalf("source=%q want=%q", mounts[0].Source, "myproj_db_data")
+	}
+	if mounts[0].Target != "/data" {
+		t.Fatalf("target=%q", mounts[0].Target)
+	}
+}
+
+func TestCmd_ensureVolumes_CreatesTopLevelProjectVolumes(t *testing.T) {
+	fd := &fakeDocker{}
+
+	proj := &types.Project{
+		Name: "myproj",
+		Volumes: types.Volumes{
+			"db_data": types.VolumeConfig{},
+		},
+	}
+
+	s := NewService(proj, types.ServiceConfig{Name: "alpine", Image: "alpine:latest"})
+
+	c := &Cmd{Service: s.config, service: s}
+
+	if err := c.ensureVolumes(context.Background(), fd); err != nil {
+		t.Fatalf("ensureVolumes: %v", err)
+	}
+	if len(fd.volumeCreateCalls) != 1 {
+		t.Fatalf("calls=%d", len(fd.volumeCreateCalls))
+	}
+	if fd.volumeCreateCalls[0].Name != "myproj_db_data" {
+		t.Fatalf("name=%q want=%q", fd.volumeCreateCalls[0].Name, "myproj_db_data")
 	}
 }
 
@@ -251,4 +314,42 @@ func TestCmd_resolveCommand_FallbackOnlyWhenArgsEmpty(t *testing.T) {
 			t.Fatalf("Args=%v want=%v", c.Args, want)
 		}
 	})
+}
+
+func TestWaitForExit_ClosedErrChStillWaitsForResp(t *testing.T) {
+	respCh := make(chan container.WaitResponse)
+	errCh := make(chan error)
+	close(errCh)
+
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		respCh <- container.WaitResponse{StatusCode: 0}
+	}()
+
+	start := time.Now()
+	_, err := waitForExit(context.Background(), context.Background(), nil, "cid", respCh, errCh)
+	if err != nil {
+		t.Fatalf("waitForExit: %v", err)
+	}
+	if time.Since(start) < 40*time.Millisecond {
+		t.Fatalf("waitForExit returned before respCh was ready")
+	}
+}
+
+func TestContainerConfigs_AddsComposeLabels(t *testing.T) {
+	proj := &types.Project{Name: "proj"}
+	svc := types.ServiceConfig{Name: "svc", Image: "alpine:latest"}
+	s := NewService(proj, svc)
+
+	c := &Cmd{Service: s.config, service: s}
+	cfg, _ := c.containerConfigs(nil)
+	if cfg.Labels == nil {
+		t.Fatalf("labels nil")
+	}
+	if cfg.Labels["com.docker.compose.project"] != "proj" {
+		t.Fatalf("project label=%q", cfg.Labels["com.docker.compose.project"])
+	}
+	if cfg.Labels["com.docker.compose.service"] != "svc" {
+		t.Fatalf("service label=%q", cfg.Labels["com.docker.compose.service"])
+	}
 }

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/compose-spec/compose-go/v2/types"
+	cerrdefs "github.com/containerd/errdefs"
 	dockertypes "github.com/docker/docker/api/types"
 	"github.com/docker/docker/client"
 )
@@ -179,6 +180,59 @@ func TestIntegration_BindMountAndPathResolution(t *testing.T) {
 	out, err := cmd.Output(ctx)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
+	}
+	got := strings.TrimSpace(string(out))
+	if got != token {
+		t.Fatalf("stdout=%q want=%q", got, token)
+	}
+}
+
+func TestIntegration_NamedVolumePersistence(t *testing.T) {
+	yaml := "" +
+		"volumes:\n" +
+		"  db_data:\n" +
+		"services:\n" +
+		"  alpine:\n" +
+		"    image: alpine:latest\n" +
+		"    command: top\n" +
+		"    volumes:\n" +
+		"      - db_data:/data\n"
+
+	_, proj := setupIntegrationWithComposeYAML(t, yaml)
+
+	svc, err := FromProject(proj, "alpine")
+	if err != nil {
+		t.Fatalf("FromProject: %v", err)
+	}
+
+	// Cleanup the created named volume (Down() intentionally does not remove volumes).
+	volName := fmt.Sprintf("%s_%s", proj.Name, "db_data")
+	t.Cleanup(func() {
+		cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+		if err != nil {
+			return
+		}
+		defer cli.Close()
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = cli.VolumeRemove(ctx, volName, true)
+	})
+
+	token := randToken(t)
+
+	cmd1 := svc.Command("sh", "-c", fmt.Sprintf("echo %s > /data/token.txt", token))
+	ctx1, cancel1 := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel1()
+	if err := cmd1.Run(ctx1); err != nil {
+		t.Fatalf("first Run: %v", err)
+	}
+
+	cmd2 := svc.Command("cat", "/data/token.txt")
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel2()
+	out, err := cmd2.Output(ctx2)
+	if err != nil {
+		t.Fatalf("second Output: %v", err)
 	}
 	got := strings.TrimSpace(string(out))
 	if got != token {
@@ -522,6 +576,61 @@ func TestIntegration_PrivilegedAndCapabilitiesMapping(t *testing.T) {
 	if err := capsCmd.Wait(ctx); err != nil {
 		t.Fatalf("caps Wait: %v", err)
 	}
+}
+
+func TestIntegration_DownRemovesContainers(t *testing.T) {
+	yaml := "" +
+		"services:\n" +
+		"  alpine:\n" +
+		"    image: alpine:latest\n" +
+		"    command: sleep 60\n"
+
+	_, proj := setupIntegrationWithComposeYAML(t, yaml)
+
+	svc, err := FromProject(proj, "alpine")
+	if err != nil {
+		t.Fatalf("FromProject: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	cmd := svc.Command()
+	if err := cmd.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	st, err := cmd.snapshotWaitState()
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	containerID := st.id
+
+	downCtx, cancelDown := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancelDown()
+	if err := Down(downCtx, proj.Name); err != nil {
+		t.Fatalf("Down: %v", err)
+	}
+
+	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	if err != nil {
+		t.Fatalf("docker client: %v", err)
+	}
+	defer cli.Close()
+
+	inspectCtx, cancelInspect := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelInspect()
+	_, err = cli.ContainerInspect(inspectCtx, containerID)
+	if err == nil {
+		t.Fatalf("expected container to be removed")
+	}
+	if !cerrdefs.IsNotFound(err) && !strings.Contains(strings.ToLower(err.Error()), "not found") {
+		t.Fatalf("unexpected inspect error: %v", err)
+	}
+
+	waitCtx, cancelWait := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancelWait()
+	_ = cmd.Wait(waitCtx)
 }
 
 func containsCapability(ss []string, want string) bool {

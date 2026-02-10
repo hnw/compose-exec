@@ -15,21 +15,31 @@ func splitEnv(kv string) (key, value string, ok bool) {
 	return kv[:idx], kv[idx+1:], true
 }
 
+type envValue struct {
+	value    string
+	hasValue bool
+}
+
 func mergeEnv(base []string, add []string) []string {
-	m := make(map[string]string)
+	m := make(map[string]envValue)
 	order := make([]string, 0, len(base)+len(add))
 	seen := make(map[string]bool)
 
 	addKV := func(kv string) {
 		k, v, ok := splitEnv(kv)
+		hasValue := ok
 		if !ok {
+			k = kv
+			v = ""
+		}
+		if k == "" {
 			return
 		}
 		if !seen[k] {
 			order = append(order, k)
 			seen[k] = true
 		}
-		m[k] = v
+		m[k] = envValue{value: v, hasValue: hasValue}
 	}
 
 	for _, kv := range base {
@@ -41,7 +51,12 @@ func mergeEnv(base []string, add []string) []string {
 
 	out := make([]string, 0, len(order))
 	for _, k := range order {
-		out = append(out, k+"="+m[k])
+		ev := m[k]
+		if ev.hasValue {
+			out = append(out, k+"="+ev.value)
+			continue
+		}
+		out = append(out, k)
 	}
 	return out
 }

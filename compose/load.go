@@ -75,12 +75,25 @@ func defaultComposeFiles(dir string, files []string) []string {
 		return out
 	}
 
-	base := filepath.Join(dir, "docker-compose.yml")
-	out := []string{base}
-	override := filepath.Join(dir, "docker-compose.override.yml")
-	if _, err := os.Stat(override); err == nil {
+	out := make([]string, 0, 2)
+
+	if base, ok := firstExistingFile(dir, []string{
+		"docker-compose.yml",
+		"docker-compose.yaml",
+	}); ok {
+		out = append(out, base)
+	} else {
+		// Preserve previous behavior: default to docker-compose.yml even if missing.
+		out = append(out, filepath.Join(dir, "docker-compose.yml"))
+	}
+
+	if override, ok := firstExistingFile(dir, []string{
+		"docker-compose.override.yml",
+		"docker-compose.override.yaml",
+	}); ok {
 		out = append(out, override)
 	}
+
 	return out
 }
 
@@ -94,4 +107,14 @@ func currentEnvMap() map[string]string {
 		out[k] = v
 	}
 	return out
+}
+
+func firstExistingFile(dir string, candidates []string) (string, bool) {
+	for _, name := range candidates {
+		path := filepath.Join(dir, name)
+		if _, err := os.Stat(path); err == nil {
+			return path, true
+		}
+	}
+	return "", false
 }

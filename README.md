@@ -8,6 +8,19 @@
 `compose-exec` is a Go library that manages the lifecycle of containers directly via the Docker Engine API, using your `docker-compose.yml` as the definition.
 It eliminates the need for the `docker` binary and shell scripts, providing a safer, programmable alternative for container automation.
 
+## 🎯 Primary Use Case: ChatOps / AI Agents
+
+You have a Go-based bot or agent running in a container, and it needs to execute many tools.
+Bundling binaries for every tool grows the image and complicates updates; shelling out to `docker compose` adds surface area and operational complexity.
+
+With `compose-exec`, each tool is a Compose service (a sibling container), and you call it with the same `os/exec`-style interface.
+
+* Keep one small controller binary; add tools by editing `docker-compose.yml`.
+* Run tools in isolated containers instead of embedding binaries.
+* Tie container lifecycle to `context.Context` and avoid orphaned containers.
+
+## 🧭 How it works
+
 ```mermaid
 graph LR
     classDef host fill:#fafafa,stroke:#666,stroke-width:2px,color:#333;
@@ -38,6 +51,7 @@ graph LR
 ## 📖 Usage (Integration Testing)
 
 Example of using an existing `docker-compose.yml` to start a database and wait for it to be healthy before running tests.
+The same pattern applies to ChatOps: treat each service as a command target and call it via `Command()`.
 
 ```go
 package main
@@ -120,13 +134,16 @@ Strictly ties container lifecycle to your Go `Context`. If your program panics o
 * **Secure & Injection-Proof:**
 Avoids shell execution entirely. By using the API directly, it structurally eliminates OS command injection risks.
 Ideal for building secure **ChatOps bots** or **AI Agent sandboxes**.
+* **Compose as a Tool Registry:**
+Add, upgrade, or swap tools by editing services in `docker-compose.yml` instead of shipping new binaries.
 
-## 🛠 Use Cases
+## ⚠️ Limitations / Compatibility
 
-1. **Self-Contained Integration Testing:**
-Spin up infrastructure (DBs, MQs), run tests, and teardown everything within a single `go test` command. No Makefiles required.
-2. **AI Agents / ChatOps:**
-Build secure tools where AI agents can execute tasks in isolated containers. Since there is no `docker` binary inside the agent container, privilege escalation risks are minimized.
+* `build` is not supported. `service.image` is required.
+* Supported volume types are `bind` and `volume` only.
+* This is not a full Docker Compose implementation. Only a subset of fields are applied
+  (image, command, entrypoint, environment, ports, volumes, networks, healthcheck, user, init, privileged, cap_add/cap_drop).
+* TTY is not supported.
 
 ## ⚙️ Configuration (DooD Setup)
 

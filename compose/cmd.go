@@ -26,6 +26,7 @@ import (
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/network"
+	"github.com/docker/docker/api/types/volume"
 	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/docker/go-connections/nat"
 )
@@ -47,6 +48,8 @@ type Cmd struct {
 	// Internal
 	service *Service
 	docker  dockerAPI
+	// dockerOwned is true when this Cmd created the client internally.
+	dockerOwned bool
 
 	mu          sync.Mutex
 	started     bool
@@ -59,7 +62,8 @@ type Cmd struct {
 	signalCtx   context.Context
 	signalStop  func()
 
-	stderrBuf bytes.Buffer
+	captureStderr bool
+	stderrBuf     bytes.Buffer
 }
 
 // String returns a human-friendly representation of the command.
@@ -117,8 +121,15 @@ func (c *Cmd) markStarted() error {
 func (c *Cmd) ensureService() {
 	if c.service == nil {
 		// Allow constructing Cmd manually, but then working dir resolution uses process cwd.
-		c.service = NewService("default", c.Service)
+		c.service = NewService(&types.Project{Name: "default"}, c.Service)
 	}
+}
+
+func (c *Cmd) projectName() string {
+	if c.service == nil || c.service.project == nil {
+		return ""
+	}
+	return c.service.project.Name
 }
 
 func (c *Cmd) resolveCommand() {
@@ -138,8 +149,23 @@ func (c *Cmd) storeSignal(sigCtx context.Context, stopSignals func()) {
 	c.mu.Unlock()
 }
 
-func (c *Cmd) ensureDockerClient() (dockerAPI, error) {
+func (c *Cmd) closeDockerIfOwned() {
+	c.mu.Lock()
+	if !c.dockerOwned || c.docker == nil {
+		c.mu.Unlock()
+		return
+	}
 	dc := c.docker
+	c.docker = nil
+	c.dockerOwned = false
+	c.mu.Unlock()
+	_ = dc.Close()
+}
+
+func (c *Cmd) ensureDockerClient() (dockerAPI, error) {
+	c.mu.Lock()
+	dc := c.docker
+	c.mu.Unlock()
 	if dc != nil {
 		return dc, nil
 	}
@@ -147,7 +173,16 @@ func (c *Cmd) ensureDockerClient() (dockerAPI, error) {
 	if err != nil {
 		return nil, err
 	}
+	c.mu.Lock()
+	if c.docker != nil {
+		existing := c.docker
+		c.mu.Unlock()
+		_ = cli.Close()
+		return existing, nil
+	}
 	c.docker = cli
+	c.dockerOwned = true
+	c.mu.Unlock()
 	return cli, nil
 }
 
@@ -160,8 +195,14 @@ func (c *Cmd) normalizedWriters() (io.Writer, io.Writer) {
 	if stderr == nil {
 		stderr = io.Discard
 	}
-	// Always capture stderr (bounded by memory) to surface on ExitError.
-	stderr = io.MultiWriter(stderr, &c.stderrBuf)
+	if c.captureStderr {
+		// Reset per run; only capture when explicitly enabled (Output/CombinedOutput).
+		c.stderrBuf.Reset()
+		stderr = io.MultiWriter(stderr, &c.stderrBuf)
+	} else {
+		// Avoid returning stale stderr from previous runs.
+		c.stderrBuf.Reset()
+	}
 	return stdout, stderr
 }
 
@@ -200,10 +241,25 @@ func (c *Cmd) containerConfigs(mounts []mount.Mount) (*container.Config, *contai
 		}
 	}
 
+	labels := map[string]string{}
+	for k, v := range c.Service.Labels {
+		labels[k] = v
+	}
+	if proj := c.projectName(); proj != "" {
+		labels["com.docker.compose.project"] = proj
+	}
+	if svc := strings.TrimSpace(c.Service.Name); svc != "" {
+		labels["com.docker.compose.service"] = svc
+	}
+	if len(labels) == 0 {
+		labels = nil
+	}
+
 	cfg := &container.Config{
 		Image:      c.Service.Image,
 		WorkingDir: c.Service.WorkingDir,
 		Env:        env,
+		Labels:     labels,
 		// TODO: Future support for TTY (out of scope).
 		Tty:          false,
 		OpenStdin:    c.Stdin != nil,
@@ -420,6 +476,9 @@ func (c *Cmd) Start(ctx context.Context) (startErr error) {
 	}
 	c.ensureService()
 	c.resolveCommand()
+	if c.Service.Build != nil {
+		return errors.New("compose: service.build is not supported (use a pre-built image)")
+	}
 	if c.Service.Image == "" {
 		return errors.New("compose: service.image is required (build is out of scope)")
 	}
@@ -437,6 +496,11 @@ func (c *Cmd) Start(ctx context.Context) (startErr error) {
 	if err != nil {
 		return err
 	}
+	defer func() {
+		if startErr != nil {
+			c.closeDockerIfOwned()
+		}
+	}()
 
 	// Pull image (build is out of scope).
 	err = pullImage(sigCtx, dc, c.Service.Image)
@@ -444,7 +508,7 @@ func (c *Cmd) Start(ctx context.Context) (startErr error) {
 		return err
 	}
 
-	mounts, err := serviceMounts(c.Service, c.service.workingDir)
+	mounts, err := serviceMounts(c.Service, c.service.workingDir, c.projectName())
 	if err != nil {
 		return err
 	}
@@ -462,6 +526,10 @@ func (c *Cmd) Start(ctx context.Context) (startErr error) {
 		if netErr := c.ensureNetworks(sigCtx, dc, networkingCfg); netErr != nil {
 			return netErr
 		}
+	}
+
+	if volErr := c.ensureVolumes(sigCtx, dc); volErr != nil {
+		return volErr
 	}
 
 	createResp, err := dc.ContainerCreate(sigCtx, cfg, hostCfg, networkingCfg, nil, containerName)
@@ -524,17 +592,100 @@ func (c *Cmd) ensureNetworks(
 
 		_, err = dc.NetworkCreate(ctx, netName, network.CreateOptions{
 			Labels: map[string]string{
-				"com.docker.compose.project": c.service.projectName,
+				"com.docker.compose.project": c.projectName(),
 				"com.docker.compose.network": "default",
 			},
 		})
 		if err != nil {
-			// 【修正箇所】競合により他プロセスが先に作成していた場合はエラーを無視して続行する
+			// If another process already created the network, ignore and continue.
 			if cerrdefs.IsAlreadyExists(err) || strings.Contains(err.Error(), "already exists") {
 				continue
 			}
 			return fmt.Errorf("failed to create network %q: %w", netName, err)
 		}
+	}
+	return nil
+}
+
+func resolveVolumeName(projectName, volumeName string) string {
+	projectName = strings.TrimSpace(projectName)
+	volumeName = strings.TrimSpace(volumeName)
+	if projectName == "" {
+		return volumeName
+	}
+	return fmt.Sprintf("%s_%s", projectName, volumeName)
+}
+
+func (c *Cmd) ensureVolumes(ctx context.Context, dc dockerAPI) error {
+	projectName := ""
+	if c.service != nil {
+		projectName = c.projectName()
+	}
+
+	if c.service != nil && c.service.project != nil && len(c.service.project.Volumes) > 0 {
+		return ensureProjectVolumes(ctx, dc, projectName, c.service.project.Volumes)
+	}
+	return ensureServiceVolumes(ctx, dc, projectName, c.Service.Volumes)
+}
+
+func ensureProjectVolumes(
+	ctx context.Context,
+	dc dockerAPI,
+	projectName string,
+	volumesMap types.Volumes,
+) error {
+	for volName := range volumesMap {
+		resolved := resolveVolumeName(projectName, volName)
+		labels := map[string]string{
+			"com.docker.compose.project": projectName,
+			"com.docker.compose.volume":  volName,
+		}
+		if err := createVolumeIdempotent(ctx, dc, resolved, labels); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func ensureServiceVolumes(
+	ctx context.Context,
+	dc dockerAPI,
+	projectName string,
+	serviceVolumes []types.ServiceVolumeConfig,
+) error {
+	seen := map[string]struct{}{}
+	for _, v := range serviceVolumes {
+		if v.Type != types.VolumeTypeVolume {
+			continue
+		}
+		name := strings.TrimSpace(v.Source)
+		if name == "" {
+			continue
+		}
+		resolved := resolveVolumeName(projectName, name)
+		if _, ok := seen[resolved]; ok {
+			continue
+		}
+		seen[resolved] = struct{}{}
+		if err := createVolumeIdempotent(ctx, dc, resolved, nil); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func createVolumeIdempotent(
+	ctx context.Context,
+	dc dockerAPI,
+	resolvedName string,
+	labels map[string]string,
+) error {
+	_, err := dc.VolumeCreate(ctx, volume.CreateOptions{Name: resolvedName, Labels: labels})
+	if err != nil {
+		if cerrdefs.IsAlreadyExists(err) || strings.Contains(err.Error(), "already exists") {
+			return nil
+		}
+		return fmt.Errorf("failed to create volume %q: %w", resolvedName, err)
 	}
 	return nil
 }
@@ -546,7 +697,7 @@ func (c *Cmd) resolveNetworking(_ context.Context, _ dockerAPI) *network.Network
 		return nil
 	}
 
-	if c.service.projectName == "" {
+	if c.projectName() == "" {
 		return nil
 	}
 
@@ -554,14 +705,14 @@ func (c *Cmd) resolveNetworking(_ context.Context, _ dockerAPI) *network.Network
 
 	if len(c.Service.Networks) > 0 {
 		for name := range c.Service.Networks {
-			netName := fmt.Sprintf("%s_%s", c.service.projectName, name)
+			netName := fmt.Sprintf("%s_%s", c.projectName(), name)
 
 			endpoints[netName] = &network.EndpointSettings{
 				Aliases: []string{c.Service.Name},
 			}
 		}
 	} else {
-		netName := fmt.Sprintf("%s_default", c.service.projectName)
+		netName := fmt.Sprintf("%s_default", c.projectName())
 		endpoints[netName] = &network.EndpointSettings{
 			Aliases: []string{c.Service.Name},
 		}
@@ -630,7 +781,12 @@ func waitForExit(
 			stopContainer()
 		case waitResp = <-respCh:
 			return waitResp, nil
-		case err := <-errCh:
+		case err, ok := <-errCh:
+			if !ok {
+				// errCh closed; disable this select case to avoid spinning.
+				errCh = nil
+				continue
+			}
 			if err != nil {
 				_ = forceRemoveContainer(context.Background(), dc, id)
 				return container.WaitResponse{}, err
@@ -679,6 +835,7 @@ func (c *Cmd) Wait(ctx context.Context) error {
 	if ctx == nil {
 		return errors.New("compose: ctx is required")
 	}
+	defer c.closeDockerIfOwned()
 	st, err := c.snapshotWaitState()
 	if err != nil {
 		return err
@@ -718,6 +875,8 @@ func (c *Cmd) Output(ctx context.Context) ([]byte, error) {
 	var stderr bytes.Buffer
 	c.Stdout = &stdout
 	c.Stderr = &stderr
+	c.captureStderr = true
+	defer func() { c.captureStderr = false }()
 
 	err := c.Run(ctx)
 	if err != nil {
@@ -735,6 +894,8 @@ func (c *Cmd) CombinedOutput(ctx context.Context) ([]byte, error) {
 	var buf bytes.Buffer
 	c.Stdout = &buf
 	c.Stderr = &buf
+	c.captureStderr = true
+	defer func() { c.captureStderr = false }()
 
 	err := c.Run(ctx)
 	return buf.Bytes(), err
@@ -808,7 +969,11 @@ func serviceEnvSlice(svc types.ServiceConfig) []string {
 	return out
 }
 
-func serviceMounts(svc types.ServiceConfig, baseDir string) ([]mount.Mount, error) {
+func serviceMounts(
+	svc types.ServiceConfig,
+	baseDir string,
+	projectName string,
+) ([]mount.Mount, error) {
 	if len(svc.Volumes) == 0 {
 		return nil, nil
 	}
@@ -820,30 +985,43 @@ func serviceMounts(svc types.ServiceConfig, baseDir string) ([]mount.Mount, erro
 
 	out := make([]mount.Mount, 0, len(svc.Volumes))
 	for _, v := range svc.Volumes {
-		// Focus on bind mounts per SOW.
 		typeStr := string(v.Type)
-		if typeStr != "" && typeStr != string(types.VolumeTypeBind) {
+		switch {
+		case typeStr == "" || v.Type == types.VolumeTypeBind:
+			if strings.TrimSpace(v.Source) == "" {
+				return nil, errors.New("compose: bind mount source is required")
+			}
+			src := v.Source
+			if !filepath.IsAbs(src) {
+				src = filepath.Join(baseDirAbs, src)
+			}
+			src, _ = filepath.Abs(src)
+
+			out = append(out, mount.Mount{
+				Type:     mount.TypeBind,
+				Source:   src,
+				Target:   v.Target,
+				ReadOnly: v.ReadOnly,
+			})
+
+		case v.Type == types.VolumeTypeVolume:
+			src := strings.TrimSpace(v.Source)
+			if src != "" {
+				src = resolveVolumeName(projectName, src)
+			}
+			out = append(out, mount.Mount{
+				Type:     mount.TypeVolume,
+				Source:   src,
+				Target:   v.Target,
+				ReadOnly: v.ReadOnly,
+			})
+
+		default:
 			return nil, fmt.Errorf(
-				"compose: unsupported volume type %q (only bind is supported)",
+				"compose: unsupported volume type %q (supported: bind, volume)",
 				typeStr,
 			)
 		}
-		if strings.TrimSpace(v.Source) == "" {
-			return nil, errors.New("compose: bind mount source is required")
-		}
-		src := v.Source
-		if !filepath.IsAbs(src) {
-			src = filepath.Join(baseDirAbs, src)
-		}
-		src, _ = filepath.Abs(src)
-
-		m := mount.Mount{
-			Type:     mount.TypeBind,
-			Source:   src,
-			Target:   v.Target,
-			ReadOnly: v.ReadOnly,
-		}
-		out = append(out, m)
 	}
 	return out, nil
 }

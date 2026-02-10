@@ -12,23 +12,26 @@ import (
 //
 // It is intentionally small; lifecycle is managed per Cmd.
 type Service struct {
-	config      types.ServiceConfig
-	projectName string
-	workingDir  string
-	loadErr     error
+	config     types.ServiceConfig
+	workingDir string
+	project    *types.Project
+	loadErr    error
 }
 
 // NewService creates a Service from a resolved service config.
 //
 // Relative paths (e.g. bind mount sources) are resolved relative to the current
 // working directory.
-func NewService(projectName string, config types.ServiceConfig) *Service {
+func NewService(project *types.Project, config types.ServiceConfig) *Service {
+	if project == nil {
+		project = &types.Project{Name: "default"}
+	}
 	cwd, _ := os.Getwd()
 	cwd, _ = filepath.Abs(cwd)
 	return &Service{
-		config:      config,
-		projectName: projectName,
-		workingDir:  cwd,
+		config:     config,
+		project:    project,
+		workingDir: cwd,
 	}
 }
 
@@ -58,7 +61,7 @@ func From(serviceName string) *Service {
 		return &Service{loadErr: err}
 	}
 
-	s := NewService(proj.Name, svcConfig)
+	s := NewService(proj, svcConfig)
 	if proj.WorkingDir != "" {
 		s.workingDir = proj.WorkingDir
 	}
@@ -79,7 +82,7 @@ func FromProject(project *types.Project, serviceName string) (*Service, error) {
 		wd, _ = os.Getwd()
 		wd, _ = filepath.Abs(wd)
 	}
-	s := NewService(project.Name, cfg)
+	s := NewService(project, cfg)
 	s.workingDir = wd
 	return s, nil
 }

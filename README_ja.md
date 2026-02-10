@@ -8,6 +8,19 @@
 `compose-exec` は、`docker-compose.yml` を定義ファイルとして利用し、Go のコードから直接コンテナのライフサイクル（起動・実行・終了）を制御するライブラリです。
 `docker` コマンドやシェルスクリプトを一切介さず、Docker Engine API を直接操作するため、安全かつ堅牢にコンテナを管理できます。
 
+## 🎯 主用途: ChatOps / AI エージェント
+
+Go 製のボットやエージェントがコンテナ内で多数のツールを実行する場合、必要なコマンドを全部同梱するとイメージが肥大化し、更新も煩雑になります。
+一方で `docker compose` にシェルアウトすると、運用やセキュリティ面の複雑さが増えがちです。
+
+`compose-exec` では、各ツールを Compose サービス（兄弟コンテナ）として定義し、`os/exec` 風のインターフェースで呼び出せます。
+
+* 小さなコントローラーバイナリを保ったまま、ツールは `docker-compose.yml` の編集で追加・更新できます。
+* バイナリ同梱ではなく、ツールを独立したコンテナとして隔離できます。
+* `context.Context` と連動してコンテナを確実に終了でき、ゾンビ化を防げます。
+
+## 🧭 仕組み
+
 ```mermaid
 graph LR
     classDef host fill:#fafafa,stroke:#666,stroke-width:2px,color:#333;
@@ -38,7 +51,7 @@ graph LR
 ## 📖 Usage (Integration Testing)
 
 既存の `docker-compose.yml` を利用して、DBの起動を待機してからテスト処理を実行する例です。
-`testcontainers` のように Go コード内でコンテナ定義を書き直す必要はありません。
+ChatOps でも同じパターンで、サービスをコマンドターゲットとして `Command()` から呼び出せます。
 
 ```go
 package main
@@ -123,13 +136,16 @@ docker compose run controller
 Go の `Context` と連動してコンテナを管理します。テストがタイムアウトしたりパニックした場合でも、コンテナは確実に停止・削除され、ゾンビプロセス化を防ぎます。
 * **Secure & Injection-Proof:**
 シェルを経由せず API を直接叩くため、OS コマンドインジェクションのリスクを構造的に排除しています。ChatOps ボットや、LLM (AI) がコードを実行するためのサンドボックス環境の実装に最適です。
+* **Compose をツールレジストリ化:**
+`docker-compose.yml` のサービス定義を変えるだけで、ツールの追加や更新ができます。
 
-## 🛠 Use Cases
+## ⚠️ Limitations / Compatibility
 
-1. **自己完結型の結合テスト (Integration Testing)**
-`TestMain` でインフラ（DBやMQ）を立ち上げ、テストを実行し、ティアダウンするまでを `go test` だけで完結させることができます。Makefile は不要です。
-2. **AI Agents / ChatOps**
-Slack ボットや AI エージェントが、ユーザーのリクエストに応じて安全にタスクを実行する基盤として利用できます。万が一コンテナ内に侵入されても、攻撃者が利用できる `docker` コマンドが存在しません。
+* `build` は未対応です。`service.image` が必須です。
+* 対応するボリュームは `bind` と `volume` のみです。
+* Docker Compose の全機能を実装するものではありません。適用されるのは一部のフィールドのみです
+  (image, command, entrypoint, environment, ports, volumes, networks, healthcheck, user, init, privileged, cap_add/cap_drop)。
+* TTY は未対応です。
 
 ## ⚙️ Configuration (DooD Setup)
 
@@ -160,6 +176,37 @@ services:
 
 ```bash
 go get github.com/hnw/compose-exec
+
+```
+
+## ❓ Troubleshooting
+
+### "No such file or directory" or Connection Errors
+
+Dockerソケットのマウントパスが間違っている可能性があります。
+Linux の Rootless Docker や macOS の Lima, Colima, OrbStack 等を使用している場合、ホスト側のソケットパスは `/var/run/docker.sock` ではない場所に存在します。
+
+**解決策:**
+`docker-compose.yml` でホスト側のパスを変数として受け取れるように記述し、実行時に正しいパスを渡してください。
+
+**docker-compose.yml:**
+
+```yaml
+services:
+  controller:
+    volumes:
+      # 環境変数 DOCKER_SOCKET_PATH があれば使い、なければデフォルト値を使う
+      # 注意: unix:// プレフィックスを含まない、絶対パスを指定してください
+      - ${DOCKER_SOCKET_PATH:-/var/run/docker.sock}:/var/run/docker.sock
+
+```
+
+**実行時 (Lima/Colima/Rootless Dockerの例):**
+
+```bash
+# 例: DOCKER_HOSTから unix:// を除去する例
+export DOCKER_SOCKET_PATH=${DOCKER_HOST#unix://}
+docker compose run controller
 
 ```
 
