@@ -63,9 +63,14 @@ func (c *Cmd) containerConfigs(mounts []mount.Mount) (*container.Config, *contai
 		labels = nil
 	}
 
+	workingDir := c.Service.WorkingDir
+	if c.WorkingDir != "" {
+		workingDir = c.WorkingDir
+	}
+
 	cfg := &container.Config{
 		Image:      c.Service.Image,
-		WorkingDir: c.Service.WorkingDir,
+		WorkingDir: workingDir,
 		Env:        env,
 		Labels:     labels,
 		// TODO: Future support for TTY (out of scope).
@@ -91,6 +96,15 @@ func (c *Cmd) containerConfigs(mounts []mount.Mount) (*container.Config, *contai
 		Init:         ptr(initEnabled),
 		Mounts:       mounts,
 		PortBindings: portBindings,
+	}
+	if c.Service.MemLimit > 0 {
+		hostCfg.Memory = int64(c.Service.MemLimit)
+	}
+	if c.Service.MemReservation > 0 {
+		hostCfg.MemoryReservation = int64(c.Service.MemReservation)
+	}
+	if c.Service.MemSwapLimit > 0 {
+		hostCfg.MemorySwap = int64(c.Service.MemSwapLimit)
 	}
 	applyHostSecurityConfig(hostCfg, c.Service)
 	if nm := strings.TrimSpace(c.Service.NetworkMode); nm != "" {

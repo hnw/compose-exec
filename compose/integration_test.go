@@ -274,6 +274,40 @@ func TestIntegration_ExitCodePropagation(t *testing.T) {
 	}
 }
 
+func TestIntegration_OOMKilled(t *testing.T) {
+	yaml := `
+services:
+  oom:
+    image: python:3.12-alpine
+    mem_limit: 32m
+    memswap_limit: 32m
+    command: ["python3", "-c", "l=[]; [l.append(' ' * 1024 * 1024) for _ in range(1024)]"]
+`
+	_, proj := setupIntegrationWithComposeYAML(t, yaml)
+	svc, err := proj.Service("oom")
+	if err != nil {
+		t.Fatalf("Project.Service: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := svc.CommandContext(ctx)
+	err = cmd.Run()
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+	var ee *ExitError
+	if !errors.As(err, &ee) {
+		t.Fatalf("expected *ExitError, got %T: %v", err, err)
+	}
+	if ee.ContainerState == nil {
+		t.Fatalf("ContainerState is nil")
+	}
+	if !ee.ContainerState.OOMKilled {
+		t.Fatalf("OOMKilled=false exit=%d err=%v", ee.ExitCode(), err)
+	}
+}
+
 func TestIntegration_SignalPropagationZombiePrevention(t *testing.T) {
 	_, svc := setupIntegration(t)
 

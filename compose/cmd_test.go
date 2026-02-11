@@ -506,3 +506,18 @@ func TestContainerConfigs_AddsComposeLabels(t *testing.T) {
 		t.Fatalf("service label=%q", cfg.Labels["com.docker.compose.service"])
 	}
 }
+
+func TestContainerConfigs_WorkingDirOverride(t *testing.T) {
+	svc := types.ServiceConfig{
+		Image:      "alpine:latest",
+		WorkingDir: "/service",
+	}
+	c := &Cmd{
+		Service:    svc,
+		WorkingDir: "/override",
+	}
+	cfg, _ := c.containerConfigs(nil)
+	if cfg.WorkingDir != "/override" {
+		t.Fatalf("WorkingDir=%q want=%q", cfg.WorkingDir, "/override")
+	}
+}

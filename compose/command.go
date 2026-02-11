@@ -7,12 +7,18 @@ import (
 
 // Command returns a Cmd to execute the given args in the named service.
 // It loads the compose project from the current working directory.
+//
+// Note: Each call loads project configuration. For repeated invocations,
+// use LoadProject once and reuse Project.Command().
 func Command(service string, arg ...string) *Cmd {
 	return commandWithContext(context.Background(), service, arg...)
 }
 
 // CommandContext returns a Cmd to execute the given args in the named service,
 // bound to the provided context for lifecycle cancellation.
+//
+// Note: Each call loads project configuration. For repeated invocations,
+// use LoadProject once and reuse Project.CommandContext().
 func CommandContext(ctx context.Context, service string, arg ...string) *Cmd {
 	if ctx == nil {
 		panic("nil Context")

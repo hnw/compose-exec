@@ -37,14 +37,23 @@ func (c *Cmd) Wait() error {
 		return ioErr
 	}
 
+	code := int(waitResp.StatusCode)
+	var exitState *container.State
+	if waitResp.Error == nil && code != 0 {
+		exitState = captureContainerState(st.dc, st.id)
+	}
+
 	_ = forceRemoveContainer(context.Background(), st.dc, st.id)
 
 	if waitResp.Error != nil {
 		return errors.New(waitResp.Error.Message)
 	}
-	code := int(waitResp.StatusCode)
 	if code != 0 {
-		return &ExitError{Code: code, Stderr: c.stderrBuf.Bytes()}
+		return &ExitError{
+			Code:           code,
+			Stderr:         c.stderrBuf.Bytes(),
+			ContainerState: exitState,
+		}
 	}
 	return nil
 }
@@ -124,6 +133,19 @@ func inspectHealthStatus(
 	default:
 		return healthStatusPending, nil
 	}
+}
+
+func captureContainerState(dc dockerAPI, containerID string) *container.State {
+	if dc == nil || containerID == "" {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	j, err := dc.ContainerInspect(ctx, containerID)
+	if err != nil || j.State == nil {
+		return nil
+	}
+	return j.State
 }
 
 type waitState struct {

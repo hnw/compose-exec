@@ -18,6 +18,9 @@ type Cmd struct {
 	Service types.ServiceConfig
 	Args    []string
 	Env     []string
+	// WorkingDir overrides the docker-compose.yml working_dir for this Cmd.
+	// Leave empty to use the service config or image default.
+	WorkingDir string
 
 	Stdin  io.Reader
 	Stdout io.Writer
