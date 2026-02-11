@@ -44,6 +44,7 @@ type Cmd struct {
 	waitErrCh   <-chan error
 	attach      *dockertypes.HijackedResponse
 	ioDone      chan struct{}
+	ioErrCh     chan error
 	stdinDone   chan struct{}
 	signalCtx   context.Context
 	signalStop  func()

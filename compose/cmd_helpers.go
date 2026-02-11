@@ -72,6 +72,7 @@ func (c *Cmd) storeAttachState(attachResp *dockertypes.HijackedResponse) {
 	c.mu.Lock()
 	c.attach = attachResp
 	c.ioDone = make(chan struct{})
+	c.ioErrCh = make(chan error, 1)
 	c.stdinDone = make(chan struct{})
 	c.mu.Unlock()
 }

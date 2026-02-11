@@ -29,7 +29,7 @@ func (c *Cmd) Wait() error {
 		return err
 	}
 
-	ioErr := waitForIO(ctx, st.dc, st.id, st.attach, st.stdinDone, st.ioDone)
+	ioErr := waitForIO(ctx, st.dc, st.id, st.attach, st.stdinDone, st.ioDone, st.ioErrCh)
 
 	closeAttach(st.attach)
 
@@ -155,6 +155,7 @@ type waitState struct {
 	errCh       <-chan error
 	attach      *dockertypes.HijackedResponse
 	ioDone      chan struct{}
+	ioErrCh     chan error
 	stdinDone   chan struct{}
 	sigCtx      context.Context
 	stopSignals func()
@@ -176,6 +177,7 @@ func (c *Cmd) snapshotWaitState() (*waitState, error) {
 		errCh:       c.waitErrCh,
 		attach:      c.attach,
 		ioDone:      c.ioDone,
+		ioErrCh:     c.ioErrCh,
 		stdinDone:   c.stdinDone,
 		sigCtx:      c.signalCtx,
 		stopSignals: c.signalStop,
@@ -235,6 +237,7 @@ func waitForIO(
 	attach *dockertypes.HijackedResponse,
 	stdinDone chan struct{},
 	ioDone chan struct{},
+	ioErrCh chan error,
 ) error {
 	if stdinDone != nil {
 		select {
@@ -245,6 +248,15 @@ func waitForIO(
 	if ioDone != nil {
 		select {
 		case <-ioDone:
+			if ioErrCh != nil {
+				select {
+				case err, ok := <-ioErrCh:
+					if ok && err != nil {
+						return err
+					}
+				default:
+				}
+			}
 			return nil
 		case <-ctx.Done():
 			closeAttach(attach)

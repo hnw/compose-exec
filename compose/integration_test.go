@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -777,4 +778,66 @@ func TestCommand_EdgeCases(t *testing.T) {
 			t.Fatalf("stdout=%q want=%q", got, "override")
 		}
 	})
+}
+
+func TestIntegration_StdoutPipe_FastExit(t *testing.T) {
+	_, svc := setupIntegration(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cmd := svc.CommandContext(ctx, "/bin/echo", "-n", "pipe-data")
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatalf("StdoutPipe: %v", err)
+	}
+
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	out, err := io.ReadAll(stdout)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+
+	if string(out) != "pipe-data" {
+		t.Errorf("StdoutPipe mismatch. got=%q, want=%q", string(out), "pipe-data")
+	}
+}
+
+type faultyWriter struct {
+	err error
+}
+
+func (fw *faultyWriter) Write(p []byte) (n int, err error) {
+	return 0, fw.err
+}
+
+func TestIntegration_WriterError_SilentFailure(t *testing.T) {
+	_, svc := setupIntegration(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cmd := svc.CommandContext(ctx, "/bin/echo", "should-fail")
+
+	expectedErr := errors.New("simulated writer error")
+	cmd.Stdout = &faultyWriter{err: expectedErr}
+
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	err := cmd.Wait()
+
+	if err == nil {
+		t.Fatalf("expected writer error, got nil")
+	}
+	if !errors.Is(err, expectedErr) {
+		t.Fatalf("expected writer error %v, got %v", expectedErr, err)
+	}
 }
