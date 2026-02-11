@@ -114,7 +114,7 @@ func (c *Cmd) Start() (startErr error) {
 		Stdin:  c.Stdin != nil,
 		Stdout: true,
 		Stderr: true,
-		Logs:   true,
+		Logs:   false,
 	})
 	if err != nil {
 		_ = forceRemoveContainer(context.Background(), dc, createResp.ID)
@@ -123,7 +123,9 @@ func (c *Cmd) Start() (startErr error) {
 	c.storeAttachState(&attachResp)
 
 	stdout, stderr := c.normalizedWriters()
-	c.startForwarding(attachResp, stdout, stderr)
+	// Ensure stdout/stderr forwarder is running before starting the container.
+	ioReady := c.startForwarding(attachResp, stdout, stderr)
+	<-ioReady
 
 	err = dc.ContainerStart(sigCtx, createResp.ID, container.StartOptions{})
 	if err != nil {
