@@ -3,6 +3,7 @@ package compose
 import (
 	"errors"
 	"io"
+	"sync"
 
 	dockertypes "github.com/docker/docker/api/types"
 	"github.com/docker/docker/pkg/stdcopy"
@@ -137,12 +138,29 @@ func (c *Cmd) closePipes(err error) {
 	c.closeStdinPipe(err)
 }
 
-func (c *Cmd) startForwarding(attachResp dockertypes.HijackedResponse, stdout, stderr io.Writer) {
+func (c *Cmd) startForwarding(
+	attachResp dockertypes.HijackedResponse,
+	stdout,
+	stderr io.Writer,
+) <-chan struct{} {
 	ioDone := c.ioDone
 	stdinDone := c.stdinDone
+	ready := make(chan struct{})
+	rawReader := attachResp.Reader
+	var reader io.Reader
+	if rawReader != nil {
+		reader = &readSignalReader{
+			r:     rawReader,
+			ready: ready,
+		}
+	} else {
+		close(ready)
+	}
 
 	go func() {
-		_, _ = stdcopy.StdCopy(stdout, stderr, attachResp.Reader)
+		if reader != nil {
+			_, _ = stdcopy.StdCopy(stdout, stderr, reader)
+		}
 		c.closeStdPipes(nil)
 		close(ioDone)
 	}()
@@ -156,4 +174,19 @@ func (c *Cmd) startForwarding(attachResp dockertypes.HijackedResponse, stdout, s
 		c.closeStdinPipe(err)
 		_ = attachResp.CloseWrite()
 	}()
+
+	return ready
+}
+
+type readSignalReader struct {
+	r     io.Reader
+	ready chan struct{}
+	once  sync.Once
+}
+
+func (r *readSignalReader) Read(p []byte) (int, error) {
+	r.once.Do(func() {
+		close(r.ready)
+	})
+	return r.r.Read(p)
 }
