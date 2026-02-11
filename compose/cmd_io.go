@@ -144,6 +144,7 @@ func (c *Cmd) startForwarding(
 	stderr io.Writer,
 ) <-chan struct{} {
 	ioDone := c.ioDone
+	ioErrCh := c.ioErrCh
 	stdinDone := c.stdinDone
 	ready := make(chan struct{})
 	rawReader := attachResp.Reader
@@ -158,10 +159,20 @@ func (c *Cmd) startForwarding(
 	}
 
 	go func() {
+		var ioErr error
 		if reader != nil {
-			_, _ = stdcopy.StdCopy(stdout, stderr, reader)
+			_, ioErr = stdcopy.StdCopy(stdout, stderr, reader)
 		}
-		c.closeStdPipes(nil)
+		if ioErr != nil && ioErrCh != nil {
+			select {
+			case ioErrCh <- ioErr:
+			default:
+			}
+		}
+		c.closeStdPipes(ioErr)
+		if ioErrCh != nil {
+			close(ioErrCh)
+		}
 		close(ioDone)
 	}()
 
