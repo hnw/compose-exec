@@ -178,10 +178,11 @@ func (c *Cmd) startForwarding(
 
 	go func() {
 		defer close(stdinDone)
-		if c.Stdin == nil {
+		stdin := c.Stdin
+		if !stdinEnabled(stdin) {
 			return
 		}
-		_, err := io.Copy(attachResp.Conn, c.Stdin)
+		_, err := io.Copy(attachResp.Conn, stdin)
 		c.closeStdinPipe(err)
 		_ = attachResp.CloseWrite()
 	}()

@@ -75,7 +75,7 @@ func (c *Cmd) containerConfigs(mounts []mount.Mount) (*container.Config, *contai
 		Labels:     labels,
 		// TODO: Future support for TTY (out of scope).
 		Tty:          false,
-		OpenStdin:    c.Stdin != nil,
+		OpenStdin:    stdinEnabled(c.Stdin),
 		StdinOnce:    false,
 		ExposedPorts: exposedPorts,
 	}

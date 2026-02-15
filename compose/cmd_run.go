@@ -111,7 +111,7 @@ func (c *Cmd) Start() (startErr error) {
 
 	attachResp, err := dc.ContainerAttach(sigCtx, createResp.ID, container.AttachOptions{
 		Stream: true,
-		Stdin:  c.Stdin != nil,
+		Stdin:  stdinEnabled(c.Stdin),
 		Stdout: true,
 		Stderr: true,
 		Logs:   true,

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -314,6 +315,20 @@ func TestCmd_Pipes_CloseBehavior(t *testing.T) {
 			t.Fatalf("expected write error")
 		}
 		_ = w.Close()
+	})
+}
+
+func TestStdinEnabled(t *testing.T) {
+	t.Run("empty strings.Reader", func(t *testing.T) {
+		if stdinEnabled(strings.NewReader("")) {
+			t.Fatalf("expected stdinEnabled to be false")
+		}
+	})
+
+	t.Run("non-empty strings.Reader", func(t *testing.T) {
+		if !stdinEnabled(strings.NewReader("x")) {
+			t.Fatalf("expected stdinEnabled to be true")
+		}
 	})
 }
 
