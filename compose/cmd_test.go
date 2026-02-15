@@ -2,6 +2,7 @@ package compose
 
 import (
 	"context"
+	"errors"
 	"io"
 	"path/filepath"
 	"reflect"
@@ -25,7 +26,18 @@ type fakeDocker struct {
 	killCalls   int
 	removeCalls int
 
+	inspectResp container.InspectResponse
+	inspectErr  error
+
+	networkListResp    []network.Summary
+	networkCreateCalls []networkCreateCall
+
 	volumeCreateCalls []volume.CreateOptions
+}
+
+type networkCreateCall struct {
+	name    string
+	options network.CreateOptions
 }
 
 func (f *fakeDocker) ImageInspectWithRaw(
@@ -86,7 +98,10 @@ func (f *fakeDocker) ContainerInspect(
 	_ context.Context,
 	_ string,
 ) (container.InspectResponse, error) {
-	return container.InspectResponse{}, nil
+	if f.inspectErr != nil {
+		return container.InspectResponse{}, f.inspectErr
+	}
+	return f.inspectResp, nil
 }
 
 func (f *fakeDocker) ContainerStop(
@@ -126,14 +141,18 @@ func (f *fakeDocker) NetworkList(
 	_ context.Context,
 	_ network.ListOptions,
 ) ([]network.Summary, error) {
-	return []network.Summary{}, nil
+	return append([]network.Summary(nil), f.networkListResp...), nil
 }
 
 func (f *fakeDocker) NetworkCreate(
 	_ context.Context,
-	_ string,
-	_ network.CreateOptions,
+	name string,
+	options network.CreateOptions,
 ) (network.CreateResponse, error) {
+	f.networkCreateCalls = append(f.networkCreateCalls, networkCreateCall{
+		name:    name,
+		options: options,
+	})
 	return network.CreateResponse{ID: "fake-network-id"}, nil
 }
 
@@ -345,7 +364,7 @@ func TestServiceMounts_RelativeSourceResolved(t *testing.T) {
 		}},
 	}
 
-	mounts, err := serviceMounts(svc, "/tmp/project", "proj")
+	mounts, err := serviceMounts(svc, "/tmp/project", "proj", nil)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -371,7 +390,7 @@ func TestServiceMounts_NamedVolumeResolved(t *testing.T) {
 		}},
 	}
 
-	mounts, err := serviceMounts(svc, "/tmp/project", "myproj")
+	mounts, err := serviceMounts(svc, "/tmp/project", "myproj", nil)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -386,6 +405,56 @@ func TestServiceMounts_NamedVolumeResolved(t *testing.T) {
 	}
 	if mounts[0].Target != "/data" {
 		t.Fatalf("target=%q", mounts[0].Target)
+	}
+}
+
+func TestServiceMounts_NamedVolume_UsesTopLevelCustomName(t *testing.T) {
+	svc := types.ServiceConfig{
+		Volumes: []types.ServiceVolumeConfig{{
+			Type:   types.VolumeTypeVolume,
+			Source: "db_data",
+			Target: "/data",
+		}},
+	}
+	projectVolumes := types.Volumes{
+		"db_data": types.VolumeConfig{Name: "custom_data"},
+	}
+
+	mounts, err := serviceMounts(svc, "/tmp/project", "myproj", projectVolumes)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if len(mounts) != 1 {
+		t.Fatalf("mounts=%d", len(mounts))
+	}
+	if mounts[0].Source != "custom_data" {
+		t.Fatalf("source=%q want=%q", mounts[0].Source, "custom_data")
+	}
+}
+
+func TestServiceMounts_NamedVolume_UsesExternalVolumeName(t *testing.T) {
+	svc := types.ServiceConfig{
+		Volumes: []types.ServiceVolumeConfig{{
+			Type:   types.VolumeTypeVolume,
+			Source: "shared",
+			Target: "/data",
+		}},
+	}
+	projectVolumes := types.Volumes{
+		"shared": types.VolumeConfig{
+			External: types.External(true),
+		},
+	}
+
+	mounts, err := serviceMounts(svc, "/tmp/project", "myproj", projectVolumes)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if len(mounts) != 1 {
+		t.Fatalf("mounts=%d", len(mounts))
+	}
+	if mounts[0].Source != "shared" {
+		t.Fatalf("source=%q want=%q", mounts[0].Source, "shared")
 	}
 }
 
@@ -416,6 +485,111 @@ func TestCmd_ensureVolumes_CreatesTopLevelProjectVolumes(t *testing.T) {
 	}
 	if fd.volumeCreateCalls[0].Name != "myproj_db_data" {
 		t.Fatalf("name=%q want=%q", fd.volumeCreateCalls[0].Name, "myproj_db_data")
+	}
+}
+
+func TestCmd_ensureVolumes_RespectsTopLevelNameAndExternal(t *testing.T) {
+	fd := &fakeDocker{}
+
+	svcCfg := types.ServiceConfig{Name: "alpine", Image: "alpine:latest"}
+	proj := &Project{
+		Name: "myproj",
+		Volumes: types.Volumes{
+			"managed": types.VolumeConfig{Name: "custom_managed"},
+			"plain":   types.VolumeConfig{},
+			"shared": types.VolumeConfig{
+				Name:     "corp_shared",
+				External: types.External(true),
+			},
+		},
+		Services: types.Services{"alpine": svcCfg},
+	}
+	s, err := proj.Service("alpine")
+	if err != nil {
+		t.Fatalf("Project.Service: %v", err)
+	}
+
+	c := &Cmd{Service: s.config, service: s}
+	if err := c.ensureVolumes(context.Background(), fd); err != nil {
+		t.Fatalf("ensureVolumes: %v", err)
+	}
+
+	if len(fd.volumeCreateCalls) != 2 {
+		t.Fatalf("calls=%d want=2", len(fd.volumeCreateCalls))
+	}
+	got := map[string]volume.CreateOptions{}
+	for _, call := range fd.volumeCreateCalls {
+		got[call.Name] = call
+	}
+	if _, ok := got["corp_shared"]; ok {
+		t.Fatalf("external volume must not be created: %#v", got["corp_shared"])
+	}
+	if _, ok := got["custom_managed"]; !ok {
+		t.Fatalf("custom named volume not created: calls=%v", fd.volumeCreateCalls)
+	}
+	if _, ok := got["myproj_plain"]; !ok {
+		t.Fatalf("default project-prefixed volume not created: calls=%v", fd.volumeCreateCalls)
+	}
+}
+
+func TestCmd_ensureNetworks_RespectsTopLevelNameAndExternal(t *testing.T) {
+	fd := &fakeDocker{}
+
+	svcCfg := types.ServiceConfig{
+		Name:  "svc",
+		Image: "alpine:latest",
+		Networks: map[string]*types.ServiceNetworkConfig{
+			"app": nil,
+			"shared": {
+				Aliases: []string{"shared-alias"},
+			},
+		},
+	}
+	proj := &Project{
+		Name: "myproj",
+		Networks: types.Networks{
+			"app": types.NetworkConfig{Name: "custom_app_net"},
+			"shared": types.NetworkConfig{
+				Name:     "corp_shared_net",
+				External: types.External(true),
+			},
+		},
+		Services: types.Services{"svc": svcCfg},
+	}
+	s, err := proj.Service("svc")
+	if err != nil {
+		t.Fatalf("Project.Service: %v", err)
+	}
+	c := &Cmd{Service: s.config, service: s}
+
+	plan := c.resolveNetworking(context.Background(), fd)
+	if plan == nil || plan.config == nil {
+		t.Fatalf("resolveNetworking returned nil")
+	}
+	if _, ok := plan.config.EndpointsConfig["custom_app_net"]; !ok {
+		t.Fatalf("missing endpoint for custom_app_net: %v", plan.config.EndpointsConfig)
+	}
+	if _, ok := plan.config.EndpointsConfig["corp_shared_net"]; !ok {
+		t.Fatalf("missing endpoint for corp_shared_net: %v", plan.config.EndpointsConfig)
+	}
+
+	if err := c.ensureNetworks(context.Background(), fd, plan); err != nil {
+		t.Fatalf("ensureNetworks: %v", err)
+	}
+
+	if len(fd.networkCreateCalls) != 1 {
+		t.Fatalf("NetworkCreate calls=%d want=1", len(fd.networkCreateCalls))
+	}
+	call := fd.networkCreateCalls[0]
+	if call.name != "custom_app_net" {
+		t.Fatalf("created network=%q want=%q", call.name, "custom_app_net")
+	}
+	if call.options.Labels["com.docker.compose.network"] != "app" {
+		t.Fatalf(
+			"network label=%q want=%q",
+			call.options.Labels["com.docker.compose.network"],
+			"app",
+		)
 	}
 }
 
@@ -498,6 +672,57 @@ func TestWaitForExit_ClosedErrChStillWaitsForResp(t *testing.T) {
 	}
 	if time.Since(start) < 40*time.Millisecond {
 		t.Fatalf("waitForExit returned before respCh was ready")
+	}
+}
+
+func TestCmd_WaitUntilHealthy_StopsOnSignalContext(t *testing.T) {
+	fd := &fakeDocker{
+		inspectResp: container.InspectResponse{
+			ContainerJSONBase: &container.ContainerJSONBase{
+				State: &container.State{
+					Running: true,
+					Health: &container.Health{
+						Status: "starting",
+					},
+				},
+			},
+		},
+	}
+
+	ctx, cancelCtx := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancelCtx()
+	sigCtx, cancelSig := context.WithCancel(context.Background())
+	defer cancelSig()
+
+	c := &Cmd{
+		Service: types.ServiceConfig{
+			Name:  "svc",
+			Image: "alpine:latest",
+			HealthCheck: &types.HealthCheckConfig{
+				Test: []string{"CMD", "true"},
+			},
+		},
+		ctx:         ctx,
+		docker:      fd,
+		started:     true,
+		containerID: "cid",
+		waitRespCh:  make(chan container.WaitResponse),
+		signalCtx:   sigCtx,
+	}
+
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		cancelSig()
+	}()
+
+	start := time.Now()
+	err := c.WaitUntilHealthy()
+	elapsed := time.Since(start)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err=%v want=%v", err, context.Canceled)
+	}
+	if elapsed > 1200*time.Millisecond {
+		t.Fatalf("WaitUntilHealthy did not stop quickly on signal context: %v", elapsed)
 	}
 }
 

@@ -77,6 +77,10 @@ func (c *Cmd) WaitUntilHealthy() error {
 	if err != nil {
 		return err
 	}
+	var sigDone <-chan struct{}
+	if st.sigCtx != nil {
+		sigDone = st.sigCtx.Done()
+	}
 
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
@@ -92,6 +96,11 @@ func (c *Cmd) WaitUntilHealthy() error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-sigDone:
+			if st.sigCtx != nil && st.sigCtx.Err() != nil {
+				return st.sigCtx.Err()
+			}
+			return context.Canceled
 		case <-ticker.C:
 		}
 	}

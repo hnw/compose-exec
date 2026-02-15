@@ -182,6 +182,7 @@ func serviceMounts(
 	svc types.ServiceConfig,
 	baseDir string,
 	projectName string,
+	projectVolumes types.Volumes,
 ) ([]mount.Mount, error) {
 	if len(svc.Volumes) == 0 {
 		return nil, nil
@@ -216,7 +217,7 @@ func serviceMounts(
 		case v.Type == types.VolumeTypeVolume:
 			src := strings.TrimSpace(v.Source)
 			if src != "" {
-				src = resolveVolumeName(projectName, src)
+				src = resolveVolumeSource(projectName, src, projectVolumes)
 			}
 			out = append(out, mount.Mount{
 				Type:     mount.TypeVolume,

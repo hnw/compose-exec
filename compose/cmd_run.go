@@ -9,6 +9,7 @@ import (
 	"syscall"
 
 	"github.com/docker/docker/api/types/container"
+	networktypes "github.com/docker/docker/api/types/network"
 )
 
 // Run starts the container and waits for it to exit, similar to (*exec.Cmd).Run.
@@ -79,7 +80,12 @@ func (c *Cmd) Start() (startErr error) {
 		return err
 	}
 
-	mounts, err := serviceMounts(c.Service, c.service.workingDir, c.projectName())
+	mounts, err := serviceMounts(
+		c.Service,
+		c.service.workingDir,
+		c.projectName(),
+		c.projectVolumes(),
+	)
 	if err != nil {
 		return err
 	}
@@ -103,7 +109,12 @@ func (c *Cmd) Start() (startErr error) {
 		return volErr
 	}
 
-	createResp, err := dc.ContainerCreate(sigCtx, cfg, hostCfg, networkingCfg, nil, containerName)
+	netCfg := (*networktypes.NetworkingConfig)(nil)
+	if networkingCfg != nil {
+		netCfg = networkingCfg.config
+	}
+
+	createResp, err := dc.ContainerCreate(sigCtx, cfg, hostCfg, netCfg, nil, containerName)
 	if err != nil {
 		return err
 	}
