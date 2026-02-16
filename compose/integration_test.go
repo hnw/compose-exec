@@ -841,3 +841,88 @@ func TestIntegration_WriterError_SilentFailure(t *testing.T) {
 		t.Fatalf("expected writer error %v, got %v", expectedErr, err)
 	}
 }
+
+func TestIntegration_Stdin_DirectReader(t *testing.T) {
+	yaml := `
+services:
+  cat_svc:
+    image: alpine:latest
+    command: cat
+`
+	_, proj := setupIntegrationWithComposeYAML(t, yaml)
+	svc, err := proj.Service("cat_svc")
+	if err != nil {
+		t.Fatalf("Project.Service: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	cmd := svc.CommandContext(ctx)
+
+	// 直接 Reader を渡すパターン
+	inputData := "hello from direct stdin\nsecond line"
+	cmd.Stdin = strings.NewReader(inputData)
+
+	// Output() は内部で Start() -> Wait() を行い、出力をキャプチャします
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("Output: %v", err)
+	}
+
+	got := string(out)
+	if got != inputData {
+		t.Fatalf("stdout mismatch.\ngot:\n%q\nwant:\n%q", got, inputData)
+	}
+}
+
+func TestIntegration_StdinPipe_Streaming(t *testing.T) {
+	yaml := `
+services:
+  cat_svc:
+    image: alpine:latest
+    command: cat
+`
+	_, proj := setupIntegrationWithComposeYAML(t, yaml)
+	svc, err := proj.Service("cat_svc")
+	if err != nil {
+		t.Fatalf("Project.Service: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	cmd := svc.CommandContext(ctx)
+
+	// パイプを取得するパターン（非同期で書き込む用途）
+	stdinPipe, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatalf("StdinPipe: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	inputData := "streaming data line 1\nstreaming data line 2\n"
+
+	// 別ゴルーチンからデータを書き込み、終わったらパイプを閉じる
+	// 閉じることでEOFがコンテナに伝わり、catが終了するはずです
+	go func() {
+		defer stdinPipe.Close()
+		_, _ = io.WriteString(stdinPipe, inputData)
+	}()
+
+	// cat プロセスが正常に終了するのを待機
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+
+	got := stdout.String()
+	if got != inputData {
+		t.Fatalf("stdout mismatch.\ngot:\n%q\nwant:\n%q", got, inputData)
+	}
+}

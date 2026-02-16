@@ -76,7 +76,7 @@ func (c *Cmd) containerConfigs(mounts []mount.Mount) (*container.Config, *contai
 		// TODO: Future support for TTY (out of scope).
 		Tty:          false,
 		OpenStdin:    stdinEnabled(c.Stdin),
-		StdinOnce:    false,
+		StdinOnce:    stdinEnabled(c.Stdin),
 		ExposedPorts: exposedPorts,
 	}
 	if hc := c.Service.HealthCheck; hc != nil {
