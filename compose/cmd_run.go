@@ -95,7 +95,10 @@ func (c *Cmd) Start() (startErr error) {
 		return err
 	}
 
-	cfg, hostCfg := c.containerConfigs(mounts)
+	cfg, hostCfg, err := c.containerConfigs(mounts)
+	if err != nil {
+		return err
+	}
 
 	networkingCfg := c.resolveNetworking(sigCtx, dc)
 

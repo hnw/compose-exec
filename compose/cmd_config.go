@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -14,54 +15,17 @@ import (
 	"github.com/docker/go-connections/nat"
 )
 
-func (c *Cmd) containerConfigs(mounts []mount.Mount) (*container.Config, *container.HostConfig) {
-	// Respect docker-compose.yml as the source of truth for user.
-	// If empty, omit and let Docker Engine/image defaults apply.
-	user := strings.TrimSpace(c.Service.User)
+func (c *Cmd) containerConfigs(
+	mounts []mount.Mount,
+) (*container.Config, *container.HostConfig, error) {
+	c.ensureService()
 
 	initEnabled := true
 	if c.Service.Init != nil {
 		initEnabled = *c.Service.Init
 	}
 
-	envBase := serviceEnvSlice(c.Service)
-	env := mergeEnv(envBase, c.Env)
-
-	exposedPorts := nat.PortSet{}
-	portBindings := nat.PortMap{}
-
-	for _, p := range c.Service.Ports {
-		proto := p.Protocol
-		if proto == "" {
-			proto = "tcp"
-		}
-
-		portKey := nat.Port(fmt.Sprintf("%d/%s", p.Target, proto))
-
-		exposedPorts[portKey] = struct{}{}
-
-		if p.Published != "" {
-			binding := nat.PortBinding{
-				HostIP:   p.HostIP,
-				HostPort: p.Published,
-			}
-			portBindings[portKey] = append(portBindings[portKey], binding)
-		}
-	}
-
-	labels := map[string]string{}
-	for k, v := range c.Service.Labels {
-		labels[k] = v
-	}
-	if proj := c.projectName(); proj != "" {
-		labels["com.docker.compose.project"] = proj
-	}
-	if svc := strings.TrimSpace(c.Service.Name); svc != "" {
-		labels["com.docker.compose.service"] = svc
-	}
-	if len(labels) == 0 {
-		labels = nil
-	}
+	exposedPorts, portBindings := c.servicePorts()
 
 	workingDir := c.Service.WorkingDir
 	if c.WorkingDir != "" {
@@ -69,11 +33,10 @@ func (c *Cmd) containerConfigs(mounts []mount.Mount) (*container.Config, *contai
 	}
 
 	cfg := &container.Config{
-		Image:      c.Service.Image,
-		WorkingDir: workingDir,
-		Env:        env,
-		Labels:     labels,
-		// TODO: Future support for TTY (out of scope).
+		Image:        c.Service.Image,
+		WorkingDir:   workingDir,
+		Env:          mergeEnv(serviceEnvSlice(c.Service), c.Env),
+		Labels:       c.serviceLabels(),
 		Tty:          false,
 		OpenStdin:    stdinEnabled(c.Stdin),
 		StdinOnce:    stdinEnabled(c.Stdin),
@@ -82,7 +45,7 @@ func (c *Cmd) containerConfigs(mounts []mount.Mount) (*container.Config, *contai
 	if hc := c.Service.HealthCheck; hc != nil {
 		cfg.Healthcheck = dockerHealthConfig(hc)
 	}
-	if user != "" {
+	if user := strings.TrimSpace(c.Service.User); user != "" {
 		cfg.User = user
 	}
 	if len(c.Args) > 0 {
@@ -106,11 +69,59 @@ func (c *Cmd) containerConfigs(mounts []mount.Mount) (*container.Config, *contai
 	if c.Service.MemSwapLimit > 0 {
 		hostCfg.MemorySwap = int64(c.Service.MemSwapLimit)
 	}
-	applyHostSecurityConfig(hostCfg, c.Service)
+	baseDir := ""
+	if c.service != nil {
+		baseDir = c.service.workingDir
+	}
+	if err := applyHostSecurityConfig(hostCfg, c.Service, baseDir); err != nil {
+		return nil, nil, err
+	}
+	applyHostResourceConfig(hostCfg, c.Service)
 	if nm := strings.TrimSpace(c.Service.NetworkMode); nm != "" {
 		hostCfg.NetworkMode = container.NetworkMode(nm)
 	}
-	return cfg, hostCfg
+	return cfg, hostCfg, nil
+}
+
+func (c *Cmd) servicePorts() (nat.PortSet, nat.PortMap) {
+	exposedPorts := nat.PortSet{}
+	portBindings := nat.PortMap{}
+
+	for _, p := range c.Service.Ports {
+		proto := p.Protocol
+		if proto == "" {
+			proto = "tcp"
+		}
+
+		portKey := nat.Port(fmt.Sprintf("%d/%s", p.Target, proto))
+		exposedPorts[portKey] = struct{}{}
+
+		if p.Published != "" {
+			binding := nat.PortBinding{
+				HostIP:   p.HostIP,
+				HostPort: p.Published,
+			}
+			portBindings[portKey] = append(portBindings[portKey], binding)
+		}
+	}
+	return exposedPorts, portBindings
+}
+
+func (c *Cmd) serviceLabels() map[string]string {
+	labels := map[string]string{}
+	for k, v := range c.Service.Labels {
+		labels[k] = v
+	}
+	if proj := c.projectName(); proj != "" {
+		labels["com.docker.compose.project"] = proj
+	}
+	if svc := strings.TrimSpace(c.Service.Name); svc != "" {
+		labels["com.docker.compose.service"] = svc
+	}
+	if len(labels) == 0 {
+		return nil
+	}
+	return labels
 }
 
 func dockerHealthConfig(hc *types.HealthCheckConfig) *container.HealthConfig {
@@ -144,9 +155,13 @@ func dockerHealthConfig(hc *types.HealthCheckConfig) *container.HealthConfig {
 	return dockerHC
 }
 
-func applyHostSecurityConfig(hostCfg *container.HostConfig, svc types.ServiceConfig) {
+func applyHostSecurityConfig(
+	hostCfg *container.HostConfig,
+	svc types.ServiceConfig,
+	baseDir string,
+) error {
 	if hostCfg == nil {
-		return
+		return nil
 	}
 	hostCfg.Privileged = svc.Privileged
 	if len(svc.CapAdd) > 0 {
@@ -155,6 +170,101 @@ func applyHostSecurityConfig(hostCfg *container.HostConfig, svc types.ServiceCon
 	if len(svc.CapDrop) > 0 {
 		hostCfg.CapDrop = append(hostCfg.CapDrop, svc.CapDrop...)
 	}
+	if len(svc.SecurityOpt) > 0 {
+		for _, opt := range svc.SecurityOpt {
+			resolved, err := resolveSecurityOpt(opt, baseDir)
+			if err != nil {
+				return err
+			}
+			hostCfg.SecurityOpt = append(hostCfg.SecurityOpt, resolved)
+		}
+	}
+	return nil
+}
+
+func applyHostResourceConfig(hostCfg *container.HostConfig, svc types.ServiceConfig) {
+	if hostCfg == nil {
+		return
+	}
+
+	if svc.ShmSize > 0 {
+		hostCfg.ShmSize = int64(svc.ShmSize)
+	}
+	if len(svc.ExtraHosts) > 0 {
+		hostCfg.ExtraHosts = append(hostCfg.ExtraHosts, svc.ExtraHosts.AsList(":")...)
+	}
+	if len(svc.Devices) > 0 {
+		hostCfg.Devices = append(hostCfg.Devices, composeDevicesToContainerDevices(svc.Devices)...)
+	}
+	if svc.CPUS > 0 {
+		hostCfg.NanoCPUs = int64(math.Round(float64(svc.CPUS) * 1_000_000_000))
+	}
+	if svc.CPUShares > 0 {
+		hostCfg.CPUShares = svc.CPUShares
+	}
+	if cpuSet := strings.TrimSpace(svc.CPUSet); cpuSet != "" {
+		hostCfg.CpusetCpus = cpuSet
+	}
+}
+
+func resolveSecurityOpt(opt string, baseDir string) (string, error) {
+	trimmed := strings.TrimSpace(opt)
+	if trimmed == "" {
+		return opt, nil
+	}
+
+	var prefix string
+	switch {
+	case strings.HasPrefix(trimmed, "seccomp:"):
+		prefix = "seccomp:"
+	case strings.HasPrefix(trimmed, "seccomp="):
+		prefix = "seccomp="
+	default:
+		return opt, nil
+	}
+
+	value := strings.TrimSpace(strings.TrimPrefix(trimmed, prefix))
+	if value == "" {
+		return trimmed, nil
+	}
+	if strings.EqualFold(value, "unconfined") || strings.HasPrefix(value, "{") {
+		return "seccomp=" + value, nil
+	}
+
+	profilePath := value
+	if baseDir != "" && !filepath.IsAbs(profilePath) {
+		baseDirAbs, err := filepath.Abs(baseDir)
+		if err != nil {
+			return "", fmt.Errorf("compose: failed to get absolute path for %q: %w", baseDir, err)
+		}
+		profilePath = filepath.Join(baseDirAbs, profilePath)
+	}
+	// #nosec G304
+	profile, err := os.ReadFile(profilePath)
+	if err != nil {
+		return "", fmt.Errorf("compose: read seccomp profile %q: %w", profilePath, err)
+	}
+	return "seccomp=" + string(profile), nil
+}
+
+func composeDevicesToContainerDevices(devices []types.DeviceMapping) []container.DeviceMapping {
+	out := make([]container.DeviceMapping, 0, len(devices))
+	for _, d := range devices {
+		pathInContainer := d.Target
+		if pathInContainer == "" {
+			pathInContainer = d.Source
+		}
+		permissions := d.Permissions
+		if permissions == "" {
+			permissions = "rwm"
+		}
+		out = append(out, container.DeviceMapping{
+			PathOnHost:        d.Source,
+			PathInContainer:   pathInContainer,
+			CgroupPermissions: permissions,
+		})
+	}
+	return out
 }
 
 func serviceEnvSlice(svc types.ServiceConfig) []string {

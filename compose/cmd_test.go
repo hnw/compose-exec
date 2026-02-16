@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -735,7 +736,10 @@ func TestContainerConfigs_AddsComposeLabels(t *testing.T) {
 	}
 
 	c := &Cmd{Service: s.config, service: s}
-	cfg, _ := c.containerConfigs(nil)
+	cfg, _, err := c.containerConfigs(nil)
+	if err != nil {
+		t.Fatalf("containerConfigs: %v", err)
+	}
 	if cfg.Labels == nil {
 		t.Fatalf("labels nil")
 	}
@@ -756,8 +760,128 @@ func TestContainerConfigs_WorkingDirOverride(t *testing.T) {
 		Service:    svc,
 		WorkingDir: "/override",
 	}
-	cfg, _ := c.containerConfigs(nil)
+	cfg, _, err := c.containerConfigs(nil)
+	if err != nil {
+		t.Fatalf("containerConfigs: %v", err)
+	}
 	if cfg.WorkingDir != "/override" {
 		t.Fatalf("WorkingDir=%q want=%q", cfg.WorkingDir, "/override")
 	}
+}
+
+func TestContainerConfigs_MapsAdditionalHostOptions(t *testing.T) {
+	svc := types.ServiceConfig{
+		Image:       "alpine:latest",
+		SecurityOpt: []string{"no-new-privileges:true", "label=disable"},
+		ShmSize:     types.UnitBytes(128 * 1024 * 1024),
+		ExtraHosts: types.HostsList{
+			"example.local": []string{"127.0.0.1"},
+			"api.local":     []string{"10.0.0.10", "10.0.0.11"},
+		},
+		Devices: []types.DeviceMapping{
+			{
+				Source:      "/dev/null",
+				Target:      "/dev/xnull",
+				Permissions: "r",
+			},
+			{
+				Source: "/dev/zero",
+			},
+		},
+		CPUS:      1.5,
+		CPUShares: 512,
+		CPUSet:    "0,2",
+	}
+	c := &Cmd{Service: svc}
+
+	_, hostCfg, err := c.containerConfigs(nil)
+	if err != nil {
+		t.Fatalf("containerConfigs: %v", err)
+	}
+
+	if !reflect.DeepEqual(hostCfg.SecurityOpt, svc.SecurityOpt) {
+		t.Fatalf("SecurityOpt=%v want=%v", hostCfg.SecurityOpt, svc.SecurityOpt)
+	}
+	if hostCfg.ShmSize != int64(svc.ShmSize) {
+		t.Fatalf("ShmSize=%d want=%d", hostCfg.ShmSize, int64(svc.ShmSize))
+	}
+
+	wantHosts := svc.ExtraHosts.AsList(":")
+	if !sameStringMultiset(hostCfg.ExtraHosts, wantHosts) {
+		t.Fatalf("ExtraHosts=%v want(as set)=%v", hostCfg.ExtraHosts, wantHosts)
+	}
+
+	wantDevices := []container.DeviceMapping{
+		{
+			PathOnHost:        "/dev/null",
+			PathInContainer:   "/dev/xnull",
+			CgroupPermissions: "r",
+		},
+		{
+			PathOnHost:        "/dev/zero",
+			PathInContainer:   "/dev/zero",
+			CgroupPermissions: "rwm",
+		},
+	}
+	if !reflect.DeepEqual(hostCfg.Devices, wantDevices) {
+		t.Fatalf("Devices=%v want=%v", hostCfg.Devices, wantDevices)
+	}
+
+	if hostCfg.NanoCPUs != 1_500_000_000 {
+		t.Fatalf("NanoCPUs=%d want=%d", hostCfg.NanoCPUs, int64(1_500_000_000))
+	}
+	if hostCfg.CPUShares != 512 {
+		t.Fatalf("CPUShares=%d want=%d", hostCfg.CPUShares, int64(512))
+	}
+	if hostCfg.CpusetCpus != "0,2" {
+		t.Fatalf("CpusetCpus=%q want=%q", hostCfg.CpusetCpus, "0,2")
+	}
+}
+
+func TestContainerConfigs_LoadsSeccompProfileFromFile(t *testing.T) {
+	dir := t.TempDir()
+	profile := `{"defaultAction":"SCMP_ACT_ERRNO"}`
+	if err := os.WriteFile(filepath.Join(dir, "seccomp.json"), []byte(profile), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	svc := types.ServiceConfig{
+		Image:       "alpine:latest",
+		SecurityOpt: []string{"seccomp:seccomp.json"},
+	}
+	project := &Project{WorkingDir: dir}
+	s := newService(project, svc)
+	c := &Cmd{Service: s.config, service: s}
+
+	_, hostCfg, err := c.containerConfigs(nil)
+	if err != nil {
+		t.Fatalf("containerConfigs: %v", err)
+	}
+	if len(hostCfg.SecurityOpt) != 1 {
+		t.Fatalf("SecurityOpt len=%d want=1", len(hostCfg.SecurityOpt))
+	}
+	want := "seccomp=" + profile
+	if hostCfg.SecurityOpt[0] != want {
+		t.Fatalf("SecurityOpt=%q want=%q", hostCfg.SecurityOpt[0], want)
+	}
+}
+
+func sameStringMultiset(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+
+	counts := map[string]int{}
+	for _, s := range a {
+		counts[s]++
+	}
+	for _, s := range b {
+		counts[s]--
+	}
+	for _, n := range counts {
+		if n != 0 {
+			return false
+		}
+	}
+	return true
 }

@@ -610,6 +610,133 @@ func TestIntegration_PrivilegedAndCapabilitiesMapping(t *testing.T) {
 	}
 }
 
+func TestIntegration_HostConfigSecurityShmAndExtraHostsMapping(t *testing.T) {
+	yaml := "" +
+		"services:\n" +
+		"  s:\n" +
+		"    image: alpine:latest\n" +
+		"    security_opt:\n" +
+		"      - no-new-privileges:true\n" +
+		"    shm_size: 96m\n" +
+		"    extra_hosts:\n" +
+		"      - example.local:127.0.0.1\n" +
+		"      - api.local:10.0.0.10\n"
+
+	_, proj := setupIntegrationWithComposeYAML(t, yaml)
+	svc, err := proj.Service("s")
+	if err != nil {
+		t.Fatalf("Project.Service(s): %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	cmd := svc.CommandContext(ctx, "sleep", "2")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	st, err := cmd.snapshotWaitState()
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	j, err := st.dc.ContainerInspect(ctx, st.id)
+	if err != nil {
+		t.Fatalf("inspect: %v", err)
+	}
+	if j.HostConfig == nil {
+		t.Fatalf("inspect: HostConfig is nil")
+	}
+
+	securityOpts := j.HostConfig.SecurityOpt
+	if !containsString(securityOpts, "no-new-privileges:true") &&
+		!containsString(securityOpts, "no-new-privileges=true") {
+		t.Fatalf("SecurityOpt=%v (expected no-new-privileges)", securityOpts)
+	}
+
+	if j.HostConfig.ShmSize != 96*1024*1024 {
+		t.Fatalf("ShmSize=%d want=%d", j.HostConfig.ShmSize, int64(96*1024*1024))
+	}
+
+	extraHosts := j.HostConfig.ExtraHosts
+	if !containsString(extraHosts, "example.local:127.0.0.1") {
+		t.Fatalf("ExtraHosts=%v (expected example.local:127.0.0.1)", extraHosts)
+	}
+	if !containsString(extraHosts, "api.local:10.0.0.10") {
+		t.Fatalf("ExtraHosts=%v (expected api.local:10.0.0.10)", extraHosts)
+	}
+
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+}
+
+func TestIntegration_HostConfigDevicesAndCPUMapping(t *testing.T) {
+	yaml := "" +
+		"services:\n" +
+		"  s:\n" +
+		"    image: alpine:latest\n" +
+		"    devices:\n" +
+		"      - /dev/null:/dev/xnull:r\n" +
+		"    cpus: 0.5\n" +
+		"    cpu_shares: 512\n" +
+		"    cpuset: \"0\"\n"
+
+	_, proj := setupIntegrationWithComposeYAML(t, yaml)
+	svc, err := proj.Service("s")
+	if err != nil {
+		t.Fatalf("Project.Service(s): %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	cmd := svc.CommandContext(ctx, "sleep", "2")
+	if err := cmd.Start(); err != nil {
+		if isUnsupportedHostConfigRuntime(err) {
+			t.Skipf("devices/cpu options are unsupported in this environment: %v", err)
+		}
+		t.Fatalf("Start: %v", err)
+	}
+
+	st, err := cmd.snapshotWaitState()
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	j, err := st.dc.ContainerInspect(ctx, st.id)
+	if err != nil {
+		t.Fatalf("inspect: %v", err)
+	}
+	if j.HostConfig == nil {
+		t.Fatalf("inspect: HostConfig is nil")
+	}
+
+	foundDevice := false
+	for _, d := range j.HostConfig.Devices {
+		if d.PathOnHost == "/dev/null" && d.PathInContainer == "/dev/xnull" && d.CgroupPermissions == "r" {
+			foundDevice = true
+			break
+		}
+	}
+	if !foundDevice {
+		t.Fatalf("Devices=%v (expected /dev/null:/dev/xnull:r)", j.HostConfig.Devices)
+	}
+
+	if j.HostConfig.NanoCPUs != 500_000_000 {
+		t.Fatalf("NanoCPUs=%d want=%d", j.HostConfig.NanoCPUs, int64(500_000_000))
+	}
+	if j.HostConfig.CPUShares != 512 {
+		t.Fatalf("CPUShares=%d want=%d", j.HostConfig.CPUShares, int64(512))
+	}
+	if j.HostConfig.CpusetCpus != "0" {
+		t.Fatalf("CpusetCpus=%q want=%q", j.HostConfig.CpusetCpus, "0")
+	}
+
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+}
+
 func TestIntegration_DownRemovesContainers(t *testing.T) {
 	yaml := "" +
 		"services:\n" +
@@ -669,6 +796,40 @@ func containsCapability(ss []string, want string) bool {
 	for _, s := range ss {
 		s = strings.ToUpper(s)
 		if s == want || s == alt {
+			return true
+		}
+	}
+	return false
+}
+
+func containsString(ss []string, want string) bool {
+	for _, s := range ss {
+		if s == want {
+			return true
+		}
+	}
+	return false
+}
+
+func isUnsupportedHostConfigRuntime(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	patterns := []string{
+		"nanocpus",
+		"cpu cfs scheduler",
+		"requested cpus are not available",
+		"cpuset",
+		"device cgroup",
+		"devices cgroup isn't mounted",
+		"error gathering device information",
+		"invalid device",
+		"operation not permitted",
+		"permission denied",
+	}
+	for _, p := range patterns {
+		if strings.Contains(msg, p) {
 			return true
 		}
 	}
