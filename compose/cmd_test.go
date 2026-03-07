@@ -16,6 +16,7 @@ import (
 	dockertypes "github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
+	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/api/types/volume"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
@@ -459,6 +460,81 @@ func TestServiceMounts_NamedVolume_UsesExternalVolumeName(t *testing.T) {
 	}
 }
 
+func TestServiceMounts_TmpfsVolume(t *testing.T) {
+	svc := types.ServiceConfig{
+		Volumes: []types.ServiceVolumeConfig{{
+			Type:     types.VolumeTypeTmpfs,
+			Target:   "/run",
+			ReadOnly: true,
+			Tmpfs: &types.ServiceVolumeTmpfs{
+				Size: 64 * 1024,
+				Mode: 0o1777,
+			},
+		}},
+	}
+
+	mounts, err := serviceMounts(svc, "/tmp/project", "proj", nil)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if len(mounts) != 1 {
+		t.Fatalf("mounts=%d", len(mounts))
+	}
+	if mounts[0].Type != mount.TypeTmpfs {
+		t.Fatalf("type=%q want=%q", mounts[0].Type, mount.TypeTmpfs)
+	}
+	if mounts[0].Target != "/run" {
+		t.Fatalf("target=%q", mounts[0].Target)
+	}
+	if !mounts[0].ReadOnly {
+		t.Fatalf("ReadOnly=false want=true")
+	}
+	if mounts[0].TmpfsOptions == nil {
+		t.Fatalf("TmpfsOptions nil")
+	}
+	if mounts[0].TmpfsOptions.SizeBytes != 64*1024 {
+		t.Fatalf("SizeBytes=%d want=%d", mounts[0].TmpfsOptions.SizeBytes, int64(64*1024))
+	}
+	if mounts[0].TmpfsOptions.Mode != os.FileMode(0o1777) {
+		t.Fatalf("Mode=%v want=%v", mounts[0].TmpfsOptions.Mode, os.FileMode(0o1777))
+	}
+}
+
+func TestServiceMounts_TmpfsDirective(t *testing.T) {
+	svc := types.ServiceConfig{
+		Tmpfs: types.StringList{
+			"/run:size=64m,mode=1777,noexec",
+		},
+	}
+
+	mounts, err := serviceMounts(svc, "/tmp/project", "proj", nil)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if len(mounts) != 1 {
+		t.Fatalf("mounts=%d", len(mounts))
+	}
+	if mounts[0].Type != mount.TypeTmpfs {
+		t.Fatalf("type=%q want=%q", mounts[0].Type, mount.TypeTmpfs)
+	}
+	if mounts[0].Target != "/run" {
+		t.Fatalf("target=%q", mounts[0].Target)
+	}
+	if mounts[0].TmpfsOptions == nil {
+		t.Fatalf("TmpfsOptions nil")
+	}
+	if mounts[0].TmpfsOptions.SizeBytes != 64*1024*1024 {
+		t.Fatalf("SizeBytes=%d want=%d", mounts[0].TmpfsOptions.SizeBytes, int64(64*1024*1024))
+	}
+	if mounts[0].TmpfsOptions.Mode != os.FileMode(0o1777) {
+		t.Fatalf("Mode=%v want=%v", mounts[0].TmpfsOptions.Mode, os.FileMode(0o1777))
+	}
+	if len(mounts[0].TmpfsOptions.Options) != 1 ||
+		mounts[0].TmpfsOptions.Options[0][0] != "noexec" {
+		t.Fatalf("Options=%v want=[[noexec]]", mounts[0].TmpfsOptions.Options)
+	}
+}
+
 func TestCmd_ensureVolumes_CreatesTopLevelProjectVolumes(t *testing.T) {
 	fd := &fakeDocker{}
 
@@ -766,6 +842,22 @@ func TestContainerConfigs_WorkingDirOverride(t *testing.T) {
 	}
 	if cfg.WorkingDir != "/override" {
 		t.Fatalf("WorkingDir=%q want=%q", cfg.WorkingDir, "/override")
+	}
+}
+
+func TestContainerConfigs_ReadOnlyRootfs(t *testing.T) {
+	svc := types.ServiceConfig{
+		Image:    "alpine:latest",
+		ReadOnly: true,
+	}
+	c := &Cmd{Service: svc}
+
+	_, hostCfg, err := c.containerConfigs(nil)
+	if err != nil {
+		t.Fatalf("containerConfigs: %v", err)
+	}
+	if !hostCfg.ReadonlyRootfs {
+		t.Fatalf("ReadonlyRootfs=false want=true")
 	}
 }
 
