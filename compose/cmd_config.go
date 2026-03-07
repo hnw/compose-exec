@@ -6,7 +6,6 @@ import (
 	"math"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -14,7 +13,6 @@ import (
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/go-connections/nat"
-	"github.com/docker/go-units"
 )
 
 func (c *Cmd) containerConfigs(
@@ -61,6 +59,25 @@ func (c *Cmd) containerConfigs(
 		Init:         ptr(initEnabled),
 		Mounts:       mounts,
 		PortBindings: portBindings,
+	}
+	if len(c.Service.Tmpfs) > 0 {
+		tmpfs := map[string]string{}
+		for _, spec := range c.Service.Tmpfs {
+			trimmed := strings.TrimSpace(spec)
+			if trimmed == "" {
+				return nil, nil, errors.New("compose: tmpfs mount target is required")
+			}
+			target, optionStr, _ := strings.Cut(trimmed, ":")
+			target = strings.TrimSpace(target)
+			optionStr = strings.TrimSpace(optionStr)
+			if target == "" {
+				return nil, nil, errors.New("compose: tmpfs mount target is required")
+			}
+			tmpfs[target] = optionStr
+		}
+		if len(tmpfs) > 0 {
+			hostCfg.Tmpfs = tmpfs
+		}
 	}
 	if c.Service.ReadOnly {
 		hostCfg.ReadonlyRootfs = true
@@ -299,7 +316,7 @@ func serviceMounts(
 	projectName string,
 	projectVolumes types.Volumes,
 ) ([]mount.Mount, error) {
-	if len(svc.Volumes) == 0 && len(svc.Tmpfs) == 0 {
+	if len(svc.Volumes) == 0 {
 		return nil, nil
 	}
 
@@ -308,7 +325,7 @@ func serviceMounts(
 		baseDirAbs, _ = filepath.Abs(baseDirAbs)
 	}
 
-	out := make([]mount.Mount, 0, len(svc.Volumes)+len(svc.Tmpfs))
+	out := make([]mount.Mount, 0, len(svc.Volumes))
 	for _, v := range svc.Volumes {
 		typeStr := string(v.Type)
 		switch {
@@ -372,110 +389,8 @@ func serviceMounts(
 			)
 		}
 	}
-	for _, spec := range svc.Tmpfs {
-		target, opts, err := parseTmpfsSpec(spec)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, mount.Mount{
-			Type:         mount.TypeTmpfs,
-			Target:       target,
-			TmpfsOptions: opts,
-		})
-	}
 	if len(out) == 0 {
 		return nil, nil
 	}
 	return out, nil
-}
-
-func parseTmpfsSpec(spec string) (string, *mount.TmpfsOptions, error) {
-	trimmed := strings.TrimSpace(spec)
-	if trimmed == "" {
-		return "", nil, errors.New("compose: tmpfs mount target is required")
-	}
-
-	target := trimmed
-	optionStr := ""
-	if idx := strings.Index(trimmed, ":"); idx >= 0 {
-		target = strings.TrimSpace(trimmed[:idx])
-		optionStr = strings.TrimSpace(trimmed[idx+1:])
-	}
-	if target == "" {
-		return "", nil, errors.New("compose: tmpfs mount target is required")
-	}
-	if optionStr == "" {
-		return target, nil, nil
-	}
-
-	opts := &mount.TmpfsOptions{}
-	for _, raw := range strings.Split(optionStr, ",") {
-		part := strings.TrimSpace(raw)
-		if part == "" {
-			continue
-		}
-		key, value, hasValue := strings.Cut(part, "=")
-		key = strings.TrimSpace(key)
-		if key == "" {
-			continue
-		}
-		if !hasValue {
-			opts.Options = append(opts.Options, []string{key})
-			continue
-		}
-		if err := handleTmpfsOption(opts, key, value); err != nil {
-			return "", nil, err
-		}
-	}
-	if opts.SizeBytes == 0 && opts.Mode == 0 && len(opts.Options) == 0 {
-		return target, nil, nil
-	}
-	return target, opts, nil
-}
-
-func handleTmpfsOption(opts *mount.TmpfsOptions, key, value string) error {
-	value = strings.TrimSpace(value)
-	switch strings.ToLower(key) {
-	case "size":
-		size, err := units.RAMInBytes(value)
-		if err != nil {
-			return fmt.Errorf("compose: invalid tmpfs size %q: %w", value, err)
-		}
-		opts.SizeBytes = size
-	case "mode":
-		mode, err := parseTmpfsMode(value)
-		if err != nil {
-			return fmt.Errorf("compose: invalid tmpfs mode %q: %w", value, err)
-		}
-		opts.Mode = mode
-	default:
-		opts.Options = append(opts.Options, []string{key, value})
-	}
-	return nil
-}
-
-func parseTmpfsMode(value string) (os.FileMode, error) {
-	trimmed := strings.TrimSpace(value)
-	if trimmed == "" {
-		return 0, errors.New("empty tmpfs mode")
-	}
-	if strings.HasPrefix(trimmed, "0o") || strings.HasPrefix(trimmed, "0O") {
-		n, err := strconv.ParseUint(trimmed[2:], 8, 32)
-		return os.FileMode(n), err
-	}
-	if isAllOctalDigits(trimmed) {
-		n, err := strconv.ParseUint(trimmed, 8, 32)
-		return os.FileMode(n), err
-	}
-	n, err := strconv.ParseUint(trimmed, 0, 32)
-	return os.FileMode(n), err
-}
-
-func isAllOctalDigits(value string) bool {
-	for _, r := range value {
-		if r < '0' || r > '7' {
-			return false
-		}
-	}
-	return value != ""
 }

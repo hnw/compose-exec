@@ -500,41 +500,6 @@ func TestServiceMounts_TmpfsVolume(t *testing.T) {
 	}
 }
 
-func TestServiceMounts_TmpfsDirective(t *testing.T) {
-	svc := types.ServiceConfig{
-		Tmpfs: types.StringList{
-			"/run:size=64m,mode=1777,noexec",
-		},
-	}
-
-	mounts, err := serviceMounts(svc, "/tmp/project", "proj", nil)
-	if err != nil {
-		t.Fatalf("err: %v", err)
-	}
-	if len(mounts) != 1 {
-		t.Fatalf("mounts=%d", len(mounts))
-	}
-	if mounts[0].Type != mount.TypeTmpfs {
-		t.Fatalf("type=%q want=%q", mounts[0].Type, mount.TypeTmpfs)
-	}
-	if mounts[0].Target != "/run" {
-		t.Fatalf("target=%q", mounts[0].Target)
-	}
-	if mounts[0].TmpfsOptions == nil {
-		t.Fatalf("TmpfsOptions nil")
-	}
-	if mounts[0].TmpfsOptions.SizeBytes != 64*1024*1024 {
-		t.Fatalf("SizeBytes=%d want=%d", mounts[0].TmpfsOptions.SizeBytes, int64(64*1024*1024))
-	}
-	if mounts[0].TmpfsOptions.Mode != os.FileMode(0o1777) {
-		t.Fatalf("Mode=%v want=%v", mounts[0].TmpfsOptions.Mode, os.FileMode(0o1777))
-	}
-	if len(mounts[0].TmpfsOptions.Options) != 1 ||
-		mounts[0].TmpfsOptions.Options[0][0] != "noexec" {
-		t.Fatalf("Options=%v want=[[noexec]]", mounts[0].TmpfsOptions.Options)
-	}
-}
-
 func TestCmd_ensureVolumes_CreatesTopLevelProjectVolumes(t *testing.T) {
 	fd := &fakeDocker{}
 
@@ -858,6 +823,29 @@ func TestContainerConfigs_ReadOnlyRootfs(t *testing.T) {
 	}
 	if !hostCfg.ReadonlyRootfs {
 		t.Fatalf("ReadonlyRootfs=false want=true")
+	}
+}
+
+func TestContainerConfigs_TmpfsMapping(t *testing.T) {
+	svc := types.ServiceConfig{
+		Image: "alpine:latest",
+		Tmpfs: types.StringList{
+			"/run:size=64m,mode=1777,noexec",
+			"/cache",
+		},
+	}
+	c := &Cmd{Service: svc}
+
+	_, hostCfg, err := c.containerConfigs(nil)
+	if err != nil {
+		t.Fatalf("containerConfigs: %v", err)
+	}
+	want := map[string]string{
+		"/run":   "size=64m,mode=1777,noexec",
+		"/cache": "",
+	}
+	if !reflect.DeepEqual(hostCfg.Tmpfs, want) {
+		t.Fatalf("Tmpfs=%v want=%v", hostCfg.Tmpfs, want)
 	}
 }
 
