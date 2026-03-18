@@ -43,17 +43,28 @@ func (c *Cmd) Wait() error {
 		exitState = captureContainerState(st.dc, st.id)
 	}
 
-	_ = forceRemoveContainer(context.Background(), st.dc, st.id)
+	rmErr := forceRemoveContainer(context.Background(), st.dc, st.id)
 
 	if waitResp.Error != nil {
-		return errors.New(waitResp.Error.Message)
+		err := errors.New(waitResp.Error.Message)
+		if rmErr != nil {
+			return errors.Join(err, fmt.Errorf("compose: cleanup failed: %w", rmErr))
+		}
+		return err
 	}
 	if code != 0 {
-		return &ExitError{
+		err := &ExitError{
 			Code:           code,
 			Stderr:         c.stderrBuf.Bytes(),
 			ContainerState: exitState,
 		}
+		if rmErr != nil {
+			return errors.Join(err, fmt.Errorf("compose: cleanup failed: %w", rmErr))
+		}
+		return err
+	}
+	if rmErr != nil {
+		return fmt.Errorf("compose: cleanup failed: %w", rmErr)
 	}
 	return nil
 }
@@ -209,12 +220,20 @@ func waitForExit(
 	}
 
 	var waitResp container.WaitResponse
+	ctxDone := ctx.Done()
+	var sigDone <-chan struct{}
+	if sigCtx != nil {
+		sigDone = sigCtx.Done()
+	}
+
 	for {
 		select {
-		case <-ctx.Done():
+		case <-ctxDone:
 			stopContainer()
-		case <-sigCtx.Done():
+			ctxDone = nil
+		case <-sigDone:
 			stopContainer()
+			sigDone = nil
 		case waitResp = <-respCh:
 			return waitResp, nil
 		case err, ok := <-errCh:

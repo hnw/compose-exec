@@ -288,10 +288,35 @@ func (c *Cmd) ensureVolumes(ctx context.Context, dc dockerAPI) error {
 	projectName := c.projectName()
 	projectVolumes := c.projectVolumes()
 
-	if len(projectVolumes) > 0 {
-		return ensureProjectVolumes(ctx, dc, projectName, projectVolumes)
+	requiredVolumes := make(types.Volumes)
+	var standaloneVolumes []types.ServiceVolumeConfig
+
+	for _, v := range c.Service.Volumes {
+		if v.Type != types.VolumeTypeVolume {
+			continue
+		}
+		name := strings.TrimSpace(v.Source)
+		if name == "" {
+			continue
+		}
+		if cfg, ok := projectVolumes[name]; ok {
+			requiredVolumes[name] = cfg
+		} else {
+			standaloneVolumes = append(standaloneVolumes, v)
+		}
 	}
-	return ensureServiceVolumes(ctx, dc, projectName, c.Service.Volumes)
+
+	if len(requiredVolumes) > 0 {
+		if err := ensureProjectVolumes(ctx, dc, projectName, requiredVolumes); err != nil {
+			return err
+		}
+	}
+	if len(standaloneVolumes) > 0 {
+		if err := ensureServiceVolumes(ctx, dc, projectName, standaloneVolumes); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func ensureProjectVolumes(

@@ -78,6 +78,8 @@ func defaultComposeFiles(dir string, files []string) []string {
 	out := make([]string, 0, 2)
 
 	if base, ok := firstExistingFile(dir, []string{
+		"compose.yaml",
+		"compose.yml",
 		"docker-compose.yml",
 		"docker-compose.yaml",
 	}); ok {
@@ -88,6 +90,8 @@ func defaultComposeFiles(dir string, files []string) []string {
 	}
 
 	if override, ok := firstExistingFile(dir, []string{
+		"compose.override.yaml",
+		"compose.override.yml",
 		"docker-compose.override.yml",
 		"docker-compose.override.yaml",
 	}); ok {

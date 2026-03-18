@@ -503,7 +503,13 @@ func TestServiceMounts_TmpfsVolume(t *testing.T) {
 func TestCmd_ensureVolumes_CreatesTopLevelProjectVolumes(t *testing.T) {
 	fd := &fakeDocker{}
 
-	svcCfg := types.ServiceConfig{Name: "alpine", Image: "alpine:latest"}
+	svcCfg := types.ServiceConfig{
+		Name:  "alpine",
+		Image: "alpine:latest",
+		Volumes: []types.ServiceVolumeConfig{
+			{Type: types.VolumeTypeVolume, Source: "db_data"},
+		},
+	}
 	proj := &Project{
 		Name: "myproj",
 		Volumes: types.Volumes{
@@ -533,7 +539,15 @@ func TestCmd_ensureVolumes_CreatesTopLevelProjectVolumes(t *testing.T) {
 func TestCmd_ensureVolumes_RespectsTopLevelNameAndExternal(t *testing.T) {
 	fd := &fakeDocker{}
 
-	svcCfg := types.ServiceConfig{Name: "alpine", Image: "alpine:latest"}
+	svcCfg := types.ServiceConfig{
+		Name:  "alpine",
+		Image: "alpine:latest",
+		Volumes: []types.ServiceVolumeConfig{
+			{Type: types.VolumeTypeVolume, Source: "managed"},
+			{Type: types.VolumeTypeVolume, Source: "plain"},
+			{Type: types.VolumeTypeVolume, Source: "shared"},
+		},
+	}
 	proj := &Project{
 		Name: "myproj",
 		Volumes: types.Volumes{
