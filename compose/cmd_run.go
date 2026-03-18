@@ -8,8 +8,10 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/containerd/platforms"
 	"github.com/docker/docker/api/types/container"
 	networktypes "github.com/docker/docker/api/types/network"
+	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
 // Run starts the container and waits for it to exit, similar to (*exec.Cmd).Run.
@@ -75,7 +77,7 @@ func (c *Cmd) Start() (startErr error) {
 	}()
 
 	// Pull image (build is out of scope).
-	err = pullImage(sigCtx, dc, c.Service.Image)
+	err = pullImage(sigCtx, dc, c.Service.Image, c.Service.Platform)
 	if err != nil {
 		return err
 	}
@@ -117,7 +119,19 @@ func (c *Cmd) Start() (startErr error) {
 		netCfg = networkingCfg.config
 	}
 
-	createResp, err := dc.ContainerCreate(sigCtx, cfg, hostCfg, netCfg, nil, containerName)
+	platform, plErr := parsePlatform(c.Service.Platform)
+	if plErr != nil {
+		return plErr
+	}
+
+	createResp, err := dc.ContainerCreate(
+		sigCtx,
+		cfg,
+		hostCfg,
+		netCfg,
+		platform,
+		containerName,
+	)
 	if err != nil {
 		return err
 	}
@@ -194,4 +208,15 @@ func (c *Cmd) CombinedOutput() ([]byte, error) {
 
 	err := c.Run()
 	return buf.Bytes(), err
+}
+
+func parsePlatform(s string) (*v1.Platform, error) {
+	if s == "" {
+		return nil, nil
+	}
+	p, err := platforms.Parse(s)
+	if err != nil {
+		return nil, err
+	}
+	return &p, nil
 }

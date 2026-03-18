@@ -48,14 +48,14 @@ func (c *Cmd) ensureDockerClient() (dockerAPI, error) {
 	return cli, nil
 }
 
-func pullImage(ctx context.Context, dc dockerAPI, ref string) error {
+func pullImage(ctx context.Context, dc dockerAPI, ref, platform string) error {
 	if _, _, err := dc.ImageInspectWithRaw(ctx, ref); err == nil {
 		return nil
 	} else if !cerrdefs.IsNotFound(err) {
 		return err
 	}
 
-	rc, err := dc.ImagePull(ctx, ref, image.PullOptions{})
+	rc, err := dc.ImagePull(ctx, ref, image.PullOptions{Platform: platform})
 	if err != nil {
 		return err
 	}

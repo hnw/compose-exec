@@ -42,6 +42,13 @@ func (c *Cmd) containerConfigs(
 		StdinOnce:    stdinEnabled(c.Stdin),
 		ExposedPorts: exposedPorts,
 	}
+	if c.Service.StopSignal != "" {
+		cfg.StopSignal = c.Service.StopSignal
+	}
+	if c.Service.StopGracePeriod != nil {
+		timeout := int(time.Duration(*c.Service.StopGracePeriod).Seconds())
+		cfg.StopTimeout = &timeout
+	}
 	if hc := c.Service.HealthCheck; hc != nil {
 		cfg.Healthcheck = dockerHealthConfig(hc)
 	}
@@ -99,6 +106,31 @@ func (c *Cmd) containerConfigs(
 		return nil, nil, err
 	}
 	applyHostResourceConfig(hostCfg, c.Service)
+	if len(c.Service.Ulimits) > 0 {
+		var ulimits []*container.Ulimit
+		for name, u := range c.Service.Ulimits {
+			if u == nil {
+				continue
+			}
+			ul := &container.Ulimit{Name: name}
+			if u.Single > 0 {
+				ul.Hard = int64(u.Single)
+				ul.Soft = int64(u.Single)
+			}
+			if u.Hard > 0 {
+				ul.Hard = int64(u.Hard)
+			}
+			if u.Soft > 0 {
+				ul.Soft = int64(u.Soft)
+			}
+			if ul.Hard > 0 || ul.Soft > 0 {
+				ulimits = append(ulimits, ul)
+			}
+		}
+		if len(ulimits) > 0 {
+			hostCfg.Ulimits = ulimits
+		}
+	}
 	if nm := strings.TrimSpace(c.Service.NetworkMode); nm != "" {
 		hostCfg.NetworkMode = container.NetworkMode(nm)
 	}
