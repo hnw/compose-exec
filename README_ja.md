@@ -142,7 +142,7 @@ Go の `Context` と連動してコンテナを管理します。テストがタ
 * `build` は未対応です。`service.image` が必須です。
 * 対応するボリュームは `bind` と `volume` のみです。
 * Docker Compose の全機能を実装するものではありません。適用されるのは一部のフィールドのみです
-  (image, command, entrypoint, environment, ports, volumes, networks, healthcheck, user, init, privileged, cap_add/cap_drop, security_opt, shm_size, extra_hosts, devices, cpus, cpu_shares, cpuset)。
+  (image, platform, command, entrypoint, working_dir, environment, env_file, ports, volumes, tmpfs, read_only, networks, network_mode, healthcheck, stop_signal, stop_grace_period, user, init, privileged, cap_add/cap_drop, security_opt, shm_size, extra_hosts, devices, mem_limit, mem_reservation, memswap_limit, cpus, cpu_shares, cpuset, ulimits, labels)。
 * TTY は未対応です。
 
 ## ⚙️ Configuration (DooD Setup)

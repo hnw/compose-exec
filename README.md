@@ -140,7 +140,7 @@ Add, upgrade, or swap tools by editing services in `docker-compose.yml` instead 
 * `build` is not supported. `service.image` is required.
 * Supported volume types are `bind` and `volume` only.
 * This is not a full Docker Compose implementation. Only a subset of fields are applied
-  (image, command, entrypoint, environment, ports, volumes, networks, healthcheck, user, init, privileged, cap_add/cap_drop, security_opt, shm_size, extra_hosts, devices, cpus, cpu_shares, cpuset).
+  (image, platform, command, entrypoint, working_dir, environment, env_file, ports, volumes, tmpfs, read_only, networks, network_mode, healthcheck, stop_signal, stop_grace_period, user, init, privileged, cap_add/cap_drop, security_opt, shm_size, extra_hosts, devices, mem_limit, mem_reservation, memswap_limit, cpus, cpu_shares, cpuset, ulimits, labels)
 * TTY is not supported.
 
 ## ⚙️ Configuration (DooD Setup)
