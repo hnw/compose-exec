@@ -26,7 +26,7 @@ import (
 func requireDocker(t *testing.T) {
 	t.Helper()
 
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	cli, err := client.NewClientWithOpts(mustClientOpts(t)...)
 	if err != nil {
 		t.Skipf("docker client unavailable: %v", err)
 	}
@@ -208,7 +208,7 @@ func TestIntegration_NamedVolumePersistence(t *testing.T) {
 	// Cleanup the created named volume (Down() intentionally does not remove volumes).
 	volName := fmt.Sprintf("%s_%s", proj.Name, "db_data")
 	t.Cleanup(func() {
-		cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+		cli, err := client.NewClientWithOpts(mustClientOpts(t)...)
 		if err != nil {
 			return
 		}
@@ -347,7 +347,7 @@ func TestIntegration_Concurrency(t *testing.T) {
 	_, svc := setupIntegration(t)
 
 	// Share a single Docker client across goroutines to stress concurrency.
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	cli, err := client.NewClientWithOpts(mustClientOpts(t)...)
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -771,7 +771,7 @@ func TestIntegration_DownRemovesContainers(t *testing.T) {
 		t.Fatalf("Down: %v", err)
 	}
 
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	cli, err := client.NewClientWithOpts(mustClientOpts(t)...)
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
