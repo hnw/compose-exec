@@ -5,7 +5,7 @@
 
 **Run Docker Compose services like `os/exec`. No Docker CLI required.**
 
-`compose-exec` is a Go library that manages the lifecycle of containers directly via the Docker Engine API, using your `docker-compose.yml` as the definition.
+`compose-exec` is a Go library that manages the lifecycle of containers directly via the Docker Engine API, using your `compose.yaml` as the definition.
 It eliminates the need for the `docker` binary and shell scripts, providing a safer, programmable alternative for container automation.
 
 ## 🎯 Primary Use Case: ChatOps / AI Agents
@@ -15,7 +15,7 @@ Bundling binaries for every tool grows the image and complicates updates; shelli
 
 With `compose-exec`, each tool is a Compose service (a sibling container), and you call it with the same `os/exec`-style interface.
 
-* Keep one small controller binary; add tools by editing `docker-compose.yml`.
+* Keep one small controller binary; add tools by editing `compose.yaml`.
 * Run tools in isolated containers instead of embedding binaries.
 * Tie container lifecycle to `context.Context` and avoid orphaned containers.
 
@@ -29,7 +29,7 @@ graph LR
     classDef target fill:#fff3e0,stroke:#ef6c00,stroke-dasharray: 5 5,color:#e65100;
 
     subgraph Host ["Host Machine"]
-        File["docker-compose.yml"]:::host
+        File["compose.yaml"]:::host
         Daemon[["Docker Daemon"]]:::daemon
     end
 
@@ -50,7 +50,7 @@ graph LR
 
 ## 📖 Usage (Integration Testing)
 
-Example of using an existing `docker-compose.yml` to start a database and wait for it to be healthy before running tests.
+Example of using an existing `compose.yaml` to start a database and wait for it to be healthy before running tests.
 The same pattern applies to ChatOps: treat each service as a command target and call it via `Command()`.
 
 ```go
@@ -96,32 +96,35 @@ func main() {
 
 ```
 
-## 🏃 Try it now (Sibling Container Demo)
+## 🏃 Try it now (Running Pandoc as a Compose Service)
 
-This repository itself serves as a functional demo.
-Run the following to see the "Controller" container dynamically spawn and control a "Sibling" container. No Go installation required.
+This repository itself serves as a functional demo: a Go "controller" converts `example/input.md` to HTML by calling **Pandoc** — which is not included in the controller image — as a sibling `pandoc` Compose service, just like an external `os/exec`-style interface. The HTML conversion result flows straight to the controller's stdout. No Go or Pandoc installation required.
 
 ```bash
 # Clone and run
 git clone https://github.com/hnw/compose-exec.git
 cd compose-exec
-docker compose run controller
-
+docker compose run --rm controller
 ```
 
 Execution Output
 
 ```text
-[Controller] Launching 'Slow-Start' Target Container...
-[Controller] 1. Attempting IMMEDIATE connection (Expect FAILURE)...
-   -> As expected, connection failed: dial tcp: lookup target: no such host
-[Controller] 2. Waiting for Target (Port 8080) to be Ready...
-   -> Target is HEALTHY! Waited: 3.2s
-[Controller] 3. Connecting to target:8080 ... SUCCESS!
+[Controller] Converting Markdown to HTML...
+[Controller] Running Pandoc via the "pandoc" Compose service.
 
+Input: example/input.md
+
+<h1 id="hello-pandoc">Hello, Pandoc</h1>
+<p>This Markdown file is converted to HTML by the
+<strong>pandoc</strong> Compose service.</p>
+...
+
+[Controller] Done. Pandoc ran in a separate container,
+[Controller] so it is not installed in the controller image.
 ```
 
-This demonstrates the **DooD (Docker outside of Docker)** pattern, often used in CI environments.
+The controller image does not need to include Pandoc or its dependencies; Pandoc comes upstream as-is (`pandoc/core` with the version fully pinned). Upgrading Pandoc is a one-line change to the image tag in `compose.yaml`. The same pattern scales to any number of containerized tools — just add services and call them via `Command()`.
 
 ## ✨ Why compose-exec?
 
@@ -133,7 +136,7 @@ Strictly ties container lifecycle to your Go `Context`. If your program panics o
 Avoids shell execution entirely. By using the API directly, it structurally eliminates OS command injection risks.
 Ideal for building secure **ChatOps bots** or **AI Agent sandboxes**.
 * **Compose as a Tool Registry:**
-Add, upgrade, or swap tools by editing services in `docker-compose.yml` instead of shipping new binaries.
+Add, upgrade, or swap tools by editing services in `compose.yaml` instead of shipping new binaries.
 
 ## ⚠️ Limitations / Compatibility
 
@@ -149,18 +152,18 @@ When running this library inside a container (Docker-outside-of-Docker), you mus
 
 **Mirror Mounting** is essential. You must map the host's current directory to the exact same path inside the container so that the Docker Daemon (running on the host) can resolve relative paths and bind mounts defined in your Compose file.
 
-**docker-compose.yml (Controller Example):**
+**compose.yaml (Configuration Example):**
 
 ```yaml
 services:
   controller:
-    image: golang:1.24
+    image: golang:1.25
     volumes:
       # 1. Access Docker API (Required)
       - /var/run/docker.sock:/var/run/docker.sock
 
       # 2. Mirror Mount (Required)
-      # Map the host working dir (${PWD}) to the same path inside the container.
+      # Map the host current directory (${PWD}) to the same path inside the container.
       - .:${PWD}
 
     # 3. Match Working Directory

@@ -5,7 +5,7 @@
 
 **`os/exec` のように Compose サービスを扱う、Docker CLI 非依存の Go ライブラリ**
 
-`compose-exec` は、`docker-compose.yml` を定義ファイルとして利用し、Go のコードから直接コンテナのライフサイクル（起動・実行・終了）を制御するライブラリです。
+`compose-exec` は、`compose.yaml` を定義ファイルとして利用し、Go のコードから直接コンテナのライフサイクル（起動・実行・終了）を制御するライブラリです。
 `docker` コマンドやシェルスクリプトを一切介さず、Docker Engine API を直接操作するため、安全かつ堅牢にコンテナを管理できます。
 
 ## 🎯 主用途: ChatOps / AI エージェント
@@ -15,7 +15,7 @@ Go 製のボットやエージェントがコンテナ内で多数のツール�
 
 `compose-exec` では、各ツールを Compose サービス（兄弟コンテナ）として定義し、`os/exec` 風のインターフェースで呼び出せます。
 
-* 小さなコントローラーバイナリを保ったまま、ツールは `docker-compose.yml` の編集で追加・更新できます。
+* 小さなコントローラーバイナリを保ったまま、ツールは `compose.yaml` の編集で追加・更新できます。
 * バイナリ同梱ではなく、ツールを独立したコンテナとして隔離できます。
 * `context.Context` と連動してコンテナを確実に終了でき、ゾンビ化を防げます。
 
@@ -29,7 +29,7 @@ graph LR
     classDef target fill:#fff3e0,stroke:#ef6c00,stroke-dasharray: 5 5,color:#e65100;
 
     subgraph Host ["ホストマシン"]
-        File["docker-compose.yml"]:::host
+        File["compose.yaml"]:::host
         Daemon[["Dockerデーモン"]]:::daemon
     end
 
@@ -50,7 +50,7 @@ graph LR
 
 ## 📖 Usage (Integration Testing)
 
-既存の `docker-compose.yml` を利用して、DBの起動を待機してからテスト処理を実行する例です。
+既存の `compose.yaml` を利用して、DBの起動を待機してからテスト処理を実行する例です。
 ChatOps でも同じパターンで、サービスをコマンドターゲットとして `Command()` から呼び出せます。
 
 ```go
@@ -83,7 +83,7 @@ func main() {
 	defer cmd.Wait()
 
 	// 3. ✨ ヘルスチェック通過を待機
-	// docker-compose.yml の healthcheck 定義を使用します。
+	// compose.yaml の healthcheck 定義を使用します。
 	// "sleep 10" のような不安定な待機処理は不要です。
 	fmt.Println("Waiting for DB to be healthy...")
 	if err := cmd.WaitUntilHealthy(); err != nil {
@@ -97,32 +97,39 @@ func main() {
 
 ```
 
-## 🏃 Try it now (Sibling Container Demo)
+## 🏃 Try it now (Pandoc を Compose サービスとして実行するデモ)
 
 このリポジトリ自体が動作デモになっています。
-以下のコマンドを実行すると、「Go製のコントローラー（コンテナ）」が「兄弟コンテナ（Sibling）」を動的に起動・制御する様子を確認できます。Go のインストールも不要です。
+Go の「コントローラー」が、`example/input.md` を Pandoc で HTML に変換します。Pandoc はコントローラーイメージには含めず、兄弟コンテナ (Sibling) として `pandoc` Compose サービスを起動し、`os/exec` のようなインターフェースで呼び出します。変換結果の HTML はコントローラーの標準出力にそのまま表示されます。Go や Pandoc のインストールは不要です。
 
 ```bash
 # クローンして実行するだけ
 git clone https://github.com/hnw/compose-exec.git
 cd compose-exec
-docker compose run controller
+docker compose run --rm controller
 
 ```
 
 実行結果ログ (Output)
 
 ```text
-[Controller] Launching 'Slow-Start' Target Container...
-[Controller] 1. Attempting IMMEDIATE connection (Expect FAILURE)...
-   -> As expected, connection failed: dial tcp: lookup target: no such host
-[Controller] 2. Waiting for Target (Port 8080) to be Ready...
-   -> Target is HEALTHY! Waited: 3.2s
-[Controller] 3. Connecting to target:8080 ... SUCCESS!
+[Controller] Converting Markdown to HTML...
+[Controller] Running Pandoc via the "pandoc" Compose service.
 
+Input: example/input.md
+
+<h1 id="hello-pandoc">Hello, Pandoc</h1>
+<p>This Markdown file is converted to HTML by the
+<strong>pandoc</strong> Compose service.</p>
+...
+
+[Controller] Done. Pandoc ran in a separate container,
+[Controller] so it is not installed in the controller image.
 ```
 
-このデモは、CI環境（GitHub Actionsなど）で Docker コンテナ内から他のコンテナを操作する DooD (Docker outside of Docker) パターンの実装例としても参照できます。
+コントローラーイメージに Pandoc やその依存関係を組み込む必要はなく、Pandoc は upstream (`pandoc/core`、バージョンを完全固定したタグ) のイメージをそのまま使います。Pandoc の更新は root の `compose.yaml` の image タグを 1 行変えるだけです。同じパターンは containerized tool をいくらでも追加できます — サービスを追加して `Command()` で呼び出すだけです。
+
+なお、このデモは CI環境（GitHub Actionsなど）で Docker コンテナ内から他のコンテナを操作する DooD (Docker outside of Docker) パターンの実装例としても参照できます。
 
 ## ✨ Why compose-exec?
 
@@ -135,7 +142,7 @@ Go の `Context` と連動してコンテナを管理します。テストがタ
 * **Secure & Injection-Proof:**
 シェルを経由せず API を直接叩くため、OS コマンドインジェクションのリスクを構造的に排除しています。ChatOps ボットや、LLM (AI) がコードを実行するためのサンドボックス環境の実装に最適です。
 * **Compose をツールレジストリ化:**
-`docker-compose.yml` のサービス定義を変えるだけで、ツールの追加や更新ができます。
+`compose.yaml` のサービス定義を変えるだけで、ツールの追加や更新ができます。
 
 ## ⚠️ Limitations / Compatibility
 
@@ -151,7 +158,7 @@ Go の `Context` と連動してコンテナを管理します。テストがタ
 
 特に **「ミラーマウント（Mirror Mount）」** が重要です。コンテナ内のファイルパスとホスト側のファイルパスを一致させることで、Compose ファイルの相対パス解決やバインドマウントが正しく機能します。
 
-**docker-compose.yml (Controller 側の設定例):**
+**compose.yaml (Controller 側の設定例):**
 
 ```yaml
 services:
@@ -185,9 +192,9 @@ Dockerソケットのマウントパスが間違っている可能性があり�
 Linux の Rootless Docker や macOS の Lima, Colima, OrbStack 等を使用している場合、ホスト側のソケットパスは `/var/run/docker.sock` ではない場所に存在します。
 
 **解決策:**
-`docker-compose.yml` でホスト側のパスを変数として受け取れるように記述し、実行時に正しいパスを渡してください。
+`compose.yaml` でホスト側のパスを変数として受け取れるように記述し、実行時に正しいパスを渡してください。
 
-**docker-compose.yml:**
+**compose.yaml:**
 
 ```yaml
 services:

@@ -1,0 +1,26 @@
+name: compose-exec-demo
+
+services:
+  controller:
+    image: golang:1.25
+    volumes:
+      # 1. Access the Docker API (Required for DooD)
+      - ${DOCKER_SOCKET_PATH:-/var/run/docker.sock}:/var/run/docker.sock
+
+      # 2. Mirror Mount (Required):
+      # the host's repository root must sit at the same absolute path
+      # inside the container, so the Docker daemon resolves the bind
+      # mounts below identically on both sides.
+      - .:${PWD}
+    working_dir: ${PWD}
+    environment:
+      # compose-exec re-reads this compose.yaml inside the container;
+      # ${PWD} above is resolved again, now from the container's env.
+      - PWD=${PWD}
+    command: go run ./example
+
+  pandoc:
+    image: pandoc/core:3.11.0.0
+    volumes:
+      - ./example:/data
+    working_dir: /data
