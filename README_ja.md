@@ -3,114 +3,58 @@
 [![Go Reference](https://pkg.go.dev/badge/github.com/hnw/compose-exec.svg)](https://pkg.go.dev/github.com/hnw/compose-exec)
 [English README](./README.md)
 
-**`os/exec` のように Compose サービスを扱う、Docker CLI 非依存の Go ライブラリ**
+`compose-exec` は、コンテナ化されたツールを Go から外部コマンドのように呼び出すためのライブラリです。
 
-`compose-exec` は、`compose.yaml` を定義ファイルとして利用し、Go のコードから直接コンテナのライフサイクル（起動・実行・終了）を制御するライブラリです。
-`docker` コマンドやシェルスクリプトを一切介さず、Docker Engine API を直接操作するため、安全かつ堅牢にコンテナを管理できます。
-
-## 🎯 主用途: ChatOps / AI エージェント
-
-Go 製のボットやエージェントがコンテナ内で多数のツールを実行する場合、必要なコマンドを全部同梱するとイメージが肥大化し、更新も煩雑になります。
-一方で `docker compose` にシェルアウトすると、運用やセキュリティ面の複雑さが増えがちです。
-
-`compose-exec` では、各ツールを Compose サービス（兄弟コンテナ）として定義し、`os/exec` 風のインターフェースで呼び出せます。
-
-* 小さなコントローラーバイナリを保ったまま、ツールは `compose.yaml` の編集で追加・更新できます。
-* バイナリ同梱ではなく、ツールを独立したコンテナとして隔離できます。
-* `context.Context` と連動してコンテナを確実に終了でき、ゾンビ化を防げます。
-
-## 🧭 仕組み
-
-```mermaid
-graph LR
-    classDef host fill:#fafafa,stroke:#666,stroke-width:2px,color:#333;
-    classDef container fill:#e3f2fd,stroke:#1565c0,stroke-width:2px,color:#0d47a1;
-    classDef daemon fill:#1565c0,stroke:#fff,stroke-width:0px,color:#fff;
-    classDef target fill:#fff3e0,stroke:#ef6c00,stroke-dasharray: 5 5,color:#e65100;
-
-    subgraph Host ["ホストマシン"]
-        File["compose.yaml"]:::host
-        Daemon[["Dockerデーモン"]]:::daemon
-    end
-
-    subgraph Controller ["Goプロセス<br>(ホストまたはコンテナ)"]
-        Lib["compose-exec"]:::container
-    end
-
-    Target("ターゲットコンテナ"):::target
-
-    Lib -- "1. 設定の読み込み" --> File
-    Lib -- "2. API呼び出し (ソケット)" --> Daemon
-    Daemon -- "3. 生成 (DooD)" --> Target
-
-    class Host host;
-    class Controller container;
-
-```
-
-## 📖 Usage (Integration Testing)
-
-既存の `compose.yaml` を利用して、DBの起動を待機してからテスト処理を実行する例です。
-ChatOps でも同じパターンで、サービスをコマンドターゲットとして `Command()` から呼び出せます。
+ツールをアプリケーションイメージに組み込まず、それぞれを Compose サービスとして分離したまま、`os/exec` に近い API で実行できます。
 
 ```go
-package main
+cmd := compose.CommandContext(ctx, "pandoc", "input.md", "-t", "html")
+cmd.Stdout = os.Stdout
+cmd.Stderr = os.Stderr
 
-import (
-	"context"
-	"fmt"
-	"os"
-	"github.com/hnw/compose-exec/compose"
-)
-
-func main() {
-	// 終了時にコンテナを停止させるためのコンテキスト
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// 1. "db" サービスに紐付いたコマンド定義（引数なし＝イメージのデフォルトコマンドを使用）
-	// Context にライフサイクルを紐付ける
-	cmd := compose.CommandContext(ctx, "db")
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
-	// 2. コンテナを起動 (Start)
-	if err := cmd.Start(); err != nil {
-		panic(err)
-	}
-
-	// 関数終了時に確実にコンテナを削除する
-	defer cmd.Wait()
-
-	// 3. ✨ ヘルスチェック通過を待機
-	// compose.yaml の healthcheck 定義を使用します。
-	// "sleep 10" のような不安定な待機処理は不要です。
-	fmt.Println("Waiting for DB to be healthy...")
-	if err := cmd.WaitUntilHealthy(); err != nil {
-		panic(err)
-	}
-
-	// 4. テストやバッチ処理の実行
-	fmt.Println("DB is ready! Running tests...")
-	// runTests()
+if err := cmd.Run(); err != nil {
+	log.Fatal(err)
 }
-
 ```
 
-## 🏃 Try it now (Pandoc を Compose サービスとして実行するデモ)
+イメージ、volume、環境変数、network など、ツール固有の実行条件は `compose.yaml` にまとめておけます。
 
-このリポジトリ自体が動作デモになっています。
-Go の「コントローラー」が、`example/input.md` を Pandoc で HTML に変換します。Pandoc はコントローラーイメージには含めず、兄弟コンテナ (Sibling) として `pandoc` Compose サービスを起動し、`os/exec` のようなインターフェースで呼び出します。変換結果の HTML はコントローラーの標準出力にそのまま表示されます。Go や Pandoc のインストールは不要です。
+`compose-exec` は `docker compose` を起動せず、Docker Engine を直接操作します。
+
+```mermaid
+flowchart LR
+    Go["Go program"]
+    CE["compose-exec"]
+    CLI["docker compose"]
+    Docker["Docker Engine"]
+    Service["Compose service"]
+
+    Go --> CE --> Docker --> Service
+    CLI -.-> Docker
+```
+
+## Example
+
+このリポジトリには Pandoc を使った実行例があります。
+
+デモは2つのサービスで構成されています。
+
+* `controller`: `compose-exec` を使う Go プログラムを実行する
+* `pandoc`: Pandoc を別コンテナとして提供する
+
+Compose のサービスは、`docker compose up` で常駐させるだけでなく、`docker compose run` のようにサービス定義を使って一時コンテナを起動する用途にも使えます。
+
+`compose-exec` も同じ考え方で、Go プログラムから `pandoc` を呼び出したときに、`pandoc` サービスの定義を使ってコンテナを起動し、指定したコマンドを実行します。
+
+次のコマンドで実行できます。
 
 ```bash
-# クローンして実行するだけ
 git clone https://github.com/hnw/compose-exec.git
 cd compose-exec
 docker compose run --rm controller
-
 ```
 
-実行結果ログ (Output)
+実行例:
 
 ```text
 [Controller] Converting Markdown to HTML...
@@ -127,99 +71,139 @@ Input: example/input.md
 [Controller] so it is not installed in the controller image.
 ```
 
-コントローラーイメージに Pandoc やその依存関係を組み込む必要はなく、Pandoc は upstream (`pandoc/core`、バージョンを完全固定したタグ) のイメージをそのまま使います。Pandoc の更新は root の `compose.yaml` の image タグを 1 行変えるだけです。同じパターンは containerized tool をいくらでも追加できます — サービスを追加して `Command()` で呼び出すだけです。
+`pandoc` サービスは `compose.yaml` で定義されています。
 
-なお、このデモは CI環境（GitHub Actionsなど）で Docker コンテナ内から他のコンテナを操作する DooD (Docker outside of Docker) パターンの実装例としても参照できます。
+```yaml
+services:
+  pandoc:
+    image: pandoc/core:3.11.0.0
+    volumes:
+      - ./example:/data
+    working_dir: /data
+```
 
-## ✨ Why compose-exec?
+Pandoc 本体や依存関係を `controller` イメージに組み込む必要はありません。Pandoc のバージョンも image tag を変更するだけで個別に更新できます。
 
-シェルスクリプトや `exec.Command("docker", ...)` と比較したメリット：
+ローカルに Go がインストールされていれば、同じプログラムをホストから直接実行することもできます。
 
-* **No Docker Binary Required:**
-実行環境に `docker` CLI が不要です。`distroless` や `scratch` ベースの軽量コンテナ内でも動作します。
-* **Robust Lifecycle Management:**
-Go の `Context` と連動してコンテナを管理します。テストがタイムアウトしたりパニックした場合でも、コンテナは確実に停止・削除され、ゾンビプロセス化を防ぎます。
-* **Secure & Injection-Proof:**
-シェルを経由せず API を直接叩くため、OS コマンドインジェクションのリスクを構造的に排除しています。ChatOps ボットや、LLM (AI) がコードを実行するためのサンドボックス環境の実装に最適です。
-* **Compose をツールレジストリ化:**
-`compose.yaml` のサービス定義を変えるだけで、ツールの追加や更新ができます。
+```bash
+go run ./example
+```
 
-## ⚠️ Limitations / Compatibility
+この場合、Go プログラムはホスト上で動作し、Pandoc だけがコンテナで実行されます。
 
-* `build` は未対応です。`service.image` が必須です。
-* 対応するボリュームは `bind` と `volume` のみです。
-* Docker Compose の全機能を実装するものではありません。適用されるのは一部のフィールドのみです
-  (image, platform, command, entrypoint, working_dir, environment, env_file, ports, volumes, tmpfs, read_only, networks, network_mode, healthcheck, stop_signal, stop_grace_period, user, init, privileged, cap_add/cap_drop, security_opt, shm_size, extra_hosts, devices, mem_limit, mem_reservation, memswap_limit, cpus, cpu_shares, cpuset, ulimits, labels)。
-* TTY は未対応です。
+## Why compose-exec?
 
-## ⚙️ Configuration (DooD Setup)
+`compose-exec` は、Go プログラムから1つ以上のツールをコンテナで実行し、その実行環境を Compose 側で管理したい場合に向いています。
 
-コンテナ内（CI環境など）でこのライブラリを使用する場合、ホスト側の Docker デーモンを操作するための設定が必要です。
+例えば、次のような用途に使えます。
 
-特に **「ミラーマウント（Mirror Mount）」** が重要です。コンテナ内のファイルパスとホスト側のファイルパスを一致させることで、Compose ファイルの相対パス解決やバインドマウントが正しく機能します。
+* ツール本体や依存関係を、それぞれ別のコンテナイメージに分離する
+* ツールのバージョンをアプリケーションとは独立して更新する
+* stdin、stdout、stderr、`context.Context` を `os/exec` に近い API で扱う
 
-**compose.yaml (Controller 側の設定例):**
+複数のコンテナ化されたツールを呼び出す、ボット、エージェント、CI用ヘルパー、自動化サービスなどでは特に使いやすい構成です。
+
+## Usage
+
+```go
+package main
+
+import (
+	"context"
+	"log"
+	"os"
+
+	"github.com/hnw/compose-exec/compose"
+)
+
+func main() {
+	ctx := context.Background()
+
+	cmd := compose.CommandContext(ctx, "pandoc", "input.md", "-t", "html")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Run(); err != nil {
+		log.Fatal(err)
+	}
+}
+```
+
+`Command()` と `CommandContext()` は、カレントディレクトリから Compose project を読み込みます。
+
+同じ project から複数のコマンドを実行する場合は、一度だけ読み込んで再利用できます。
+
+```go
+project, err := compose.LoadProject(ctx, ".")
+if err != nil {
+	log.Fatal(err)
+}
+
+cmd := project.CommandContext(ctx, "tool", "--version")
+```
+
+## Docker-outside-of-Docker
+
+Go プログラム自体をコンテナ内で実行し、ホストの Docker daemon を利用することもできます。
+
+この構成では、`controller` はマウントした Docker socket を使い、`compose.yaml` のサービス定義から sibling container を起動します。
+
+Docker socket をマウントし、project directory はホストと `controller` コンテナ内で同じ絶対パスに配置します。
 
 ```yaml
 services:
   controller:
-    image: golang:1.24
+    image: golang:1.25
     volumes:
-      # 1. Docker API ソケットの共有 (必須)
       - /var/run/docker.sock:/var/run/docker.sock
-
-      # 2. ミラーマウント (必須)
-      # ホストのカレントディレクトリ(${PWD})を、コンテナ内の同じパスにマウントする
       - .:${PWD}
-
-    # 3. 作業ディレクトリの同期
     working_dir: ${PWD}
-
+    environment:
+      - PWD=${PWD}
 ```
+
+`compose.yaml` の bind mount が正しいホスト側のパスを参照できるよう、project directory のパスを揃える必要があります。
+
+## Compose support
+
+`compose-exec` は、コンテナ化されたツールや関連サービスを実行する際によく使う Compose の設定に対応しています。
+
+主な制限事項:
+
+* `build` には対応していません。サービスには `image` の指定が必要です
+* Docker Compose の完全な実装ではありません
+* TTY には対応していません
+
+対応しているサービス設定:
+
+* `image`, `platform`
+* `command`, `entrypoint`, `working_dir`
+* `environment`, `env_file`
+* `volumes`, `tmpfs`, `read_only`
+* `ports`
+* `networks`, `network_mode`, `extra_hosts`
+* `healthcheck`
+* `user`, `init`
+* `stop_signal`, `stop_grace_period`
+* `privileged`, `cap_add`, `cap_drop`, `security_opt`
+* `shm_size`, `devices`
+* `mem_limit`, `mem_reservation`, `memswap_limit`
+* `cpus`, `cpu_shares`, `cpuset`
+* `ulimits`, `labels`
+
+上記以外の Compose 設定はサポート対象外です。
 
 ## Installation
 
 ```bash
 go get github.com/hnw/compose-exec
-
-```
-
-## ❓ Troubleshooting
-
-### "No such file or directory" or Connection Errors
-
-Dockerソケットのマウントパスが間違っている可能性があります。
-Linux の Rootless Docker や macOS の Lima, Colima, OrbStack 等を使用している場合、ホスト側のソケットパスは `/var/run/docker.sock` ではない場所に存在します。
-
-**解決策:**
-`compose.yaml` でホスト側のパスを変数として受け取れるように記述し、実行時に正しいパスを渡してください。
-
-**compose.yaml:**
-
-```yaml
-services:
-  controller:
-    volumes:
-      # 環境変数 DOCKER_SOCKET_PATH があれば使い、なければデフォルト値を使う
-      # 注意: unix:// プレフィックスを含まない、絶対パスを指定してください
-      - ${DOCKER_SOCKET_PATH:-/var/run/docker.sock}:/var/run/docker.sock
-
-```
-
-**実行時 (Lima/Colima/Rootless Dockerの例):**
-
-```bash
-# 例: DOCKER_HOSTから unix:// を除去する例
-export DOCKER_SOCKET_PATH=${DOCKER_HOST#unix://}
-docker compose run controller
-
 ```
 
 ## Requirements
 
-* **Go:** 1.24以上
-* **Docker Engine:** APIバージョン 1.40以上
-* **OS:** Linux, macOS (Docker Desktop), Windows (WSL2推奨)
+* Go 1.24 以降
+* Docker Engine API v1.40 以降
 
 ## License
 

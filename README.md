@@ -1,113 +1,58 @@
 # compose-exec
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/hnw/compose-exec.svg)](https://pkg.go.dev/github.com/hnw/compose-exec)
-[Japanese README (日本語ドキュメント)](./README_ja.md)
+[Japanese README](./README_ja.md)
 
-**Run Docker Compose services like `os/exec`. No Docker CLI required.**
+`compose-exec` lets Go programs run containerized tools like external commands.
 
-`compose-exec` is a Go library that manages the lifecycle of containers directly via the Docker Engine API, using your `compose.yaml` as the definition.
-It eliminates the need for the `docker` binary and shell scripts, providing a safer, programmable alternative for container automation.
-
-## 🎯 Primary Use Case: ChatOps / AI Agents
-
-You have a Go-based bot or agent running in a container, and it needs to execute many tools.
-Bundling binaries for every tool grows the image and complicates updates; shelling out to `docker compose` adds surface area and operational complexity.
-
-With `compose-exec`, each tool is a Compose service (a sibling container), and you call it with the same `os/exec`-style interface.
-
-* Keep one small controller binary; add tools by editing `compose.yaml`.
-* Run tools in isolated containers instead of embedding binaries.
-* Tie container lifecycle to `context.Context` and avoid orphaned containers.
-
-## 🧭 How it works
-
-```mermaid
-graph LR
-    classDef host fill:#fafafa,stroke:#666,stroke-width:2px,color:#333;
-    classDef container fill:#e3f2fd,stroke:#1565c0,stroke-width:2px,color:#0d47a1;
-    classDef daemon fill:#1565c0,stroke:#fff,stroke-width:0px,color:#fff;
-    classDef target fill:#fff3e0,stroke:#ef6c00,stroke-dasharray: 5 5,color:#e65100;
-
-    subgraph Host ["Host Machine"]
-        File["compose.yaml"]:::host
-        Daemon[["Docker Daemon"]]:::daemon
-    end
-
-    subgraph Controller ["Go Process<br>(Host or Container)"]
-        Lib["compose-exec"]:::container
-    end
-
-    Target("Target Container"):::target
-
-    Lib -- "1. Load Config" --> File
-    Lib -- "2. API Call (Socket)" --> Daemon
-    Daemon -- "3. Spawn (DooD)" --> Target
-
-    class Host host;
-    class Controller container;
-
-```
-
-## 📖 Usage (Integration Testing)
-
-Example of using an existing `compose.yaml` to start a database and wait for it to be healthy before running tests.
-The same pattern applies to ChatOps: treat each service as a command target and call it via `Command()`.
+Keep each tool in its own Compose service instead of bundling it into the application image, and invoke it through an `os/exec`-like API.
 
 ```go
-package main
+cmd := compose.CommandContext(ctx, "pandoc", "input.md", "-t", "html")
+cmd.Stdout = os.Stdout
+cmd.Stderr = os.Stderr
 
-import (
-	"context"
-	"fmt"
-	"os"
-	"github.com/hnw/compose-exec/compose"
-)
-
-func main() {
-	// Context to manage container lifecycle
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// 1. Define command bound to the "db" service (Empty args = use image default command)
-	// Bind lifecycle to context
-	cmd := compose.CommandContext(ctx, "db")
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
-	// 2. Start the container asynchronously
-	if err := cmd.Start(); err != nil {
-		panic(err)
-	}
-
-	// Ensure container is removed when function exits
-	defer cmd.Wait()
-
-	// 3. ✨ Wait for Healthcheck
-	// Uses the healthcheck defined in your YAML. No more arbitrary "sleep 10".
-	fmt.Println("Waiting for DB to be healthy...")
-	if err := cmd.WaitUntilHealthy(); err != nil {
-		panic(err)
-	}
-
-	// 4. Run your tests or logic
-	fmt.Println("DB is ready! Running tests...")
-	// runTests()
+if err := cmd.Run(); err != nil {
+	log.Fatal(err)
 }
-
 ```
 
-## 🏃 Try it now (Running Pandoc as a Compose Service)
+Tool-specific settings such as the image, volumes, environment variables, and networks stay in `compose.yaml`.
 
-This repository itself serves as a functional demo: a Go "controller" converts `example/input.md` to HTML by calling **Pandoc** — which is not included in the controller image — as a sibling `pandoc` Compose service, just like an external `os/exec`-style interface. The HTML conversion result flows straight to the controller's stdout. No Go or Pandoc installation required.
+`compose-exec` talks to the Docker Engine directly instead of invoking `docker compose`.
+
+```mermaid
+flowchart LR
+    Go["Go program"]
+    CE["compose-exec"]
+    CLI["docker compose"]
+    Docker["Docker Engine"]
+    Service["Compose service"]
+
+    Go --> CE --> Docker --> Service
+    CLI -.-> Docker
+```
+
+## Example
+
+This repository includes a runnable Pandoc example with two services:
+
+* `controller` runs the Go program using `compose-exec`
+* `pandoc` provides Pandoc in a separate container
+
+Compose services do not have to be long-running processes started with `docker compose up`. They can also be used as definitions for short-lived containers, as with `docker compose run`.
+
+`compose-exec` uses the same idea: when the Go program invokes `pandoc`, it creates a container from the `pandoc` service definition and runs the requested command.
+
+Run the example with:
 
 ```bash
-# Clone and run
 git clone https://github.com/hnw/compose-exec.git
 cd compose-exec
 docker compose run --rm controller
 ```
 
-Execution Output
+Example output:
 
 ```text
 [Controller] Converting Markdown to HTML...
@@ -124,65 +69,139 @@ Input: example/input.md
 [Controller] so it is not installed in the controller image.
 ```
 
-The controller image does not need to include Pandoc or its dependencies; Pandoc comes upstream as-is (`pandoc/core` with the version fully pinned). Upgrading Pandoc is a one-line change to the image tag in `compose.yaml`. The same pattern scales to any number of containerized tools — just add services and call them via `Command()`.
+The `pandoc` service is defined in `compose.yaml`:
 
-## ✨ Why compose-exec?
+```yaml
+services:
+  pandoc:
+    image: pandoc/core:3.11.0.0
+    volumes:
+      - ./example:/data
+    working_dir: /data
+```
 
-* **No Docker Binary Required:**
-Runs without the `docker` CLI installation. Compatible with `distroless` or `scratch` images.
-* **Robust Lifecycle Management:**
-Strictly ties container lifecycle to your Go `Context`. If your program panics or times out, containers are cleaned up ensuring no zombie processes.
-* **Secure & Injection-Proof:**
-Avoids shell execution entirely. By using the API directly, it structurally eliminates OS command injection risks.
-Ideal for building secure **ChatOps bots** or **AI Agent sandboxes**.
-* **Compose as a Tool Registry:**
-Add, upgrade, or swap tools by editing services in `compose.yaml` instead of shipping new binaries.
+Pandoc and its dependencies stay out of the controller image, and its version can be changed independently by updating the image tag.
 
-## ⚠️ Limitations / Compatibility
+If Go is installed locally, the same example can also be run directly:
 
-* `build` is not supported. `service.image` is required.
-* Supported volume types are `bind` and `volume` only.
-* This is not a full Docker Compose implementation. Only a subset of fields are applied
-  (image, platform, command, entrypoint, working_dir, environment, env_file, ports, volumes, tmpfs, read_only, networks, network_mode, healthcheck, stop_signal, stop_grace_period, user, init, privileged, cap_add/cap_drop, security_opt, shm_size, extra_hosts, devices, mem_limit, mem_reservation, memswap_limit, cpus, cpu_shares, cpuset, ulimits, labels)
-* TTY is not supported.
+```bash
+go run ./example
+```
 
-## ⚙️ Configuration (DooD Setup)
+In that case, the Go program runs on the host and only Pandoc runs in a container.
 
-When running this library inside a container (Docker-outside-of-Docker), you must configure the volume mounts correctly.
+## Why compose-exec?
 
-**Mirror Mounting** is essential. You must map the host's current directory to the exact same path inside the container so that the Docker Daemon (running on the host) can resolve relative paths and bind mounts defined in your Compose file.
+`compose-exec` is useful when a Go program needs to run one or more tools in containers while keeping their runtime setup in Compose.
 
-**compose.yaml (Configuration Example):**
+Typical use cases include:
+
+* keeping tools and their dependencies in separate container images
+* updating tool versions independently from the application
+* using stdin, stdout, stderr, and `context.Context` through an `os/exec`-like API
+
+This works especially well for bots, agents, CI helpers, and automation services that call several containerized tools.
+
+## Usage
+
+```go
+package main
+
+import (
+	"context"
+	"log"
+	"os"
+
+	"github.com/hnw/compose-exec/compose"
+)
+
+func main() {
+	ctx := context.Background()
+
+	cmd := compose.CommandContext(ctx, "pandoc", "input.md", "-t", "html")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Run(); err != nil {
+		log.Fatal(err)
+	}
+}
+```
+
+`Command()` and `CommandContext()` load the Compose project from the current working directory.
+
+For repeated commands, load the project once and reuse it:
+
+```go
+project, err := compose.LoadProject(ctx, ".")
+if err != nil {
+	log.Fatal(err)
+}
+
+cmd := project.CommandContext(ctx, "tool", "--version")
+```
+
+## Docker-outside-of-Docker
+
+The Go program can itself run inside a container while using the host Docker daemon.
+
+In this setup, the controller uses the mounted Docker socket to start sibling containers from the service definitions in `compose.yaml`.
+
+Mount the Docker socket and keep the project at the same absolute path on the host and inside the controller:
 
 ```yaml
 services:
   controller:
     image: golang:1.25
     volumes:
-      # 1. Access Docker API (Required)
       - /var/run/docker.sock:/var/run/docker.sock
-
-      # 2. Mirror Mount (Required)
-      # Map the host current directory (${PWD}) to the same path inside the container.
       - .:${PWD}
-
-    # 3. Match Working Directory
     working_dir: ${PWD}
-
+    environment:
+      - PWD=${PWD}
 ```
+
+Using the same path allows bind mounts in `compose.yaml` to refer to the correct host paths.
+
+## Compose support
+
+`compose-exec` supports the Compose settings commonly needed to run containerized tools and supporting services.
+
+Notable limitations:
+
+* `build` is not supported; services must specify `image`
+* `compose-exec` is not a full Docker Compose implementation
+* TTY is not supported
+
+Supported service fields include:
+
+* `image`, `platform`
+* `command`, `entrypoint`, `working_dir`
+* `environment`, `env_file`
+* `volumes`, `tmpfs`, `read_only`
+* `ports`
+* `networks`, `network_mode`, `extra_hosts`
+* `healthcheck`
+* `user`, `init`
+* `stop_signal`, `stop_grace_period`
+* `privileged`, `cap_add`, `cap_drop`, `security_opt`
+* `shm_size`, `devices`
+* `mem_limit`, `mem_reservation`, `memswap_limit`
+* `cpus`, `cpu_shares`, `cpuset`
+* `ulimits`, `labels`
+
+Other Compose fields are outside the supported scope.
 
 ## Installation
 
 ```bash
 go get github.com/hnw/compose-exec
-
 ```
 
 ## Requirements
 
-* **Go:** 1.24+
-* **Docker Engine:** API v1.40+
-* **OS:** Linux, macOS, Windows (WSL2 recommended)
+* Go 1.24 or later
+* Docker Engine API v1.40 or later
 
 ## License
 
