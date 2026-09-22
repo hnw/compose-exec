@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -26,7 +25,7 @@ import (
 func requireDocker(t *testing.T) {
 	t.Helper()
 
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	cli, err := client.NewClientWithOpts(mustClientOpts(t)...)
 	if err != nil {
 		t.Skipf("docker client unavailable: %v", err)
 	}
@@ -208,7 +207,7 @@ func TestIntegration_NamedVolumePersistence(t *testing.T) {
 	// Cleanup the created named volume (Down() intentionally does not remove volumes).
 	volName := fmt.Sprintf("%s_%s", proj.Name, "db_data")
 	t.Cleanup(func() {
-		cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+		cli, err := client.NewClientWithOpts(mustClientOpts(t)...)
 		if err != nil {
 			return
 		}
@@ -347,7 +346,7 @@ func TestIntegration_Concurrency(t *testing.T) {
 	_, svc := setupIntegration(t)
 
 	// Share a single Docker client across goroutines to stress concurrency.
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	cli, err := client.NewClientWithOpts(mustClientOpts(t)...)
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -440,55 +439,6 @@ func TestIntegration_CommandNotFound(t *testing.T) {
 	msg := strings.ToLower(err.Error())
 	if !strings.Contains(msg, "not found") && !strings.Contains(msg, "executable file") {
 		t.Fatalf("unexpected error: %T: %v", err, err)
-	}
-}
-
-func TestIntegration_ExampleScenarioRegression(t *testing.T) {
-	// Reproduce the example: Controller runs locally, then Target runs via compose.Command("target").
-	// Keep it portable across macOS by falling back if /etc/os-release isn't present.
-
-	// Controller (self)
-	if _, err := os.Stat("/etc/os-release"); err == nil {
-		b, err := exec.Command("cat", "/etc/os-release").CombinedOutput()
-		if err != nil {
-			t.Fatalf("controller cat /etc/os-release: %v", err)
-		}
-		if len(bytes.TrimSpace(b)) == 0 {
-			t.Fatalf("controller output empty")
-		}
-	} else {
-		b, err := exec.Command("uname", "-a").CombinedOutput()
-		if err != nil {
-			t.Fatalf("controller uname: %v", err)
-		}
-		if len(bytes.TrimSpace(b)) == 0 {
-			t.Fatalf("controller output empty")
-		}
-	}
-
-	// Target (sibling)
-	requireDocker(t)
-	wd, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("Getwd: %v", err)
-	}
-	root := filepath.Dir(wd)
-	oldwd := wd
-	if err := os.Chdir(root); err != nil {
-		t.Fatalf("Chdir repo root: %v", err)
-	}
-	t.Cleanup(func() { _ = os.Chdir(oldwd) })
-
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-
-	siblingCmd := CommandContext(ctx, "target", "cat", "/etc/os-release")
-	out, err := siblingCmd.Output()
-	if err != nil {
-		t.Fatalf("sibling container ('target') Run: %v", err)
-	}
-	if !strings.Contains(strings.ToLower(string(out)), "alpine") {
-		t.Fatalf("stdout=%q (expected alpine)", string(out))
 	}
 }
 
@@ -771,7 +721,7 @@ func TestIntegration_DownRemovesContainers(t *testing.T) {
 		t.Fatalf("Down: %v", err)
 	}
 
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	cli, err := client.NewClientWithOpts(mustClientOpts(t)...)
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}

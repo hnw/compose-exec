@@ -20,7 +20,7 @@ func maybeWarnMissingComposeFileInContainer(wd string) {
 	}
 	writeWarning(
 		os.Stderr,
-		"Running inside a container but 'docker-compose.yml' is not found. Ensure the host's current directory is mounted to the same path inside this container (Mirror Mount).",
+		"Running inside a container but no compose file ('compose.yaml' or 'docker-compose.yml') is found. Ensure the host's current directory is mounted to the same path inside this container (Mirror Mount).",
 	)
 }
 
@@ -28,11 +28,15 @@ func hasComposeFile(dir string) bool {
 	if dir == "" {
 		return false
 	}
-	if _, err := os.Stat(filepath.Join(dir, "docker-compose.yml")); err == nil {
-		return true
-	}
-	if _, err := os.Stat(filepath.Join(dir, "docker-compose.yaml")); err == nil {
-		return true
+	for _, name := range []string{
+		"compose.yaml",
+		"compose.yml",
+		"docker-compose.yml",
+		"docker-compose.yaml",
+	} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
+			return true
+		}
 	}
 	return false
 }

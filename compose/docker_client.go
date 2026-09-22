@@ -60,5 +60,9 @@ type dockerAPI interface {
 }
 
 func newDockerClient() (dockerAPI, error) {
-	return client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	opts, err := dockerClientOpts()
+	if err != nil {
+		return nil, err
+	}
+	return client.NewClientWithOpts(opts...)
 }
