@@ -21,6 +21,9 @@ type Cmd struct {
 	// WorkingDir overrides the docker-compose.yml working_dir for this Cmd.
 	// Leave empty to use the service config or image default.
 	WorkingDir string
+	// TTY enables limited terminal support for commands that require one.
+	// Output is returned as one raw stream through Stdout.
+	TTY bool
 
 	Stdin  io.Reader
 	Stdout io.Writer

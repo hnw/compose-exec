@@ -161,7 +161,11 @@ func (c *Cmd) startForwarding(
 	go func() {
 		var ioErr error
 		if reader != nil {
-			_, ioErr = stdcopy.StdCopy(stdout, stderr, reader)
+			if c.TTY {
+				_, ioErr = io.Copy(stdout, reader)
+			} else {
+				_, ioErr = stdcopy.StdCopy(stdout, stderr, reader)
+			}
 		}
 		if ioErr != nil && ioErrCh != nil {
 			select {
