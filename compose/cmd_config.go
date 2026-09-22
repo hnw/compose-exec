@@ -37,7 +37,7 @@ func (c *Cmd) containerConfigs(
 		WorkingDir:   workingDir,
 		Env:          mergeEnv(serviceEnvSlice(c.Service), c.Env),
 		Labels:       c.serviceLabels(),
-		Tty:          false,
+		Tty:          c.TTY,
 		OpenStdin:    stdinEnabled(c.Stdin),
 		StdinOnce:    stdinEnabled(c.Stdin),
 		ExposedPorts: exposedPorts,

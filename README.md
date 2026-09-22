@@ -171,7 +171,6 @@ Notable limitations:
 
 * `build` is not supported; services must specify `image`
 * `compose-exec` is not a full Docker Compose implementation
-* TTY is not supported
 
 Supported service fields include:
 

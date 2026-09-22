@@ -178,6 +178,20 @@ type nopReader struct{}
 
 func (n *nopReader) Read(_ []byte) (int, error) { return 0, io.EOF }
 
+func TestCmdContainerConfigsTTY(t *testing.T) {
+	cmd := &Cmd{
+		TTY:     true,
+		Service: types.ServiceConfig{Image: "busybox:1.36"},
+	}
+	cfg, _, err := cmd.containerConfigs(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Tty {
+		t.Fatal("container TTY is disabled")
+	}
+}
+
 type testEnvValue struct {
 	value    string
 	hasValue bool
