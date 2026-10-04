@@ -3,9 +3,9 @@
 [![Go Reference](https://pkg.go.dev/badge/github.com/hnw/compose-exec.svg)](https://pkg.go.dev/github.com/hnw/compose-exec)
 [English README](./README.md)
 
-`compose-exec` は、コンテナ化されたツールを Go から外部コマンドのように呼び出すためのライブラリです。
+`compose-exec` は、コンテナ化したツールを Go から外部コマンドのように実行するためのライブラリです。
 
-ツールをアプリケーションイメージに組み込まず、それぞれを Compose サービスとして分離したまま、`os/exec` に近い API で実行できます。
+ツールをアプリケーションイメージに組み込まず、それぞれを Compose サービスとして分離したまま、`os/exec` に近い API で呼び出せます。
 
 ```go
 cmd := compose.CommandContext(ctx, "pandoc", "input.md", "-t", "html")
@@ -17,9 +17,9 @@ if err := cmd.Run(); err != nil {
 }
 ```
 
-イメージ、volume、環境変数、network など、ツール固有の実行条件は `compose.yaml` にまとめておけます。
+イメージ、volume、環境変数、network など、ツールの実行条件は `compose.yaml` にまとめて定義できます。
 
-`compose-exec` は `docker compose` を起動せず、Docker Engine を直接操作します。
+`compose-exec` は `docker compose` コマンドを起動せず、Docker Engine API を直接呼び出します。
 
 ```mermaid
 flowchart LR
@@ -35,18 +35,18 @@ flowchart LR
 
 ## Example
 
-このリポジトリには Pandoc を使った実行例があります。
+このリポジトリには、Pandoc をコンテナで実行する例があります。
 
-デモは2つのサービスで構成されています。
+デモは次の2つのサービスで構成されています。
 
-* `controller`: `compose-exec` を使う Go プログラムを実行する
-* `pandoc`: Pandoc を別コンテナとして提供する
+* `controller`: `compose-exec` を使う Go プログラム
+* `pandoc`: Pandoc を提供するコンテナ
 
-Compose のサービスは、`docker compose up` で常駐させるだけでなく、`docker compose run` のようにサービス定義を使って一時コンテナを起動する用途にも使えます。
+Compose のサービス定義は、`docker compose up` で常駐コンテナを起動する用途だけでなく、`docker compose run` のように一時コンテナを起動する用途にも使えます。
 
-`compose-exec` も同じ考え方で、Go プログラムから `pandoc` を呼び出したときに、`pandoc` サービスの定義を使ってコンテナを起動し、指定したコマンドを実行します。
+`compose-exec` も同じ考え方で動作します。Go プログラムから `pandoc` を呼び出すと、`pandoc` サービスの定義を使って一時コンテナを作成し、その中で指定したコマンドを実行します。
 
-次のコマンドで実行できます。
+次のコマンドでデモを実行できます。
 
 ```bash
 git clone https://github.com/hnw/compose-exec.git
@@ -71,7 +71,7 @@ Input: example/input.md
 [Controller] so it is not installed in the controller image.
 ```
 
-`pandoc` サービスは `compose.yaml` で定義されています。
+`pandoc` サービスは `compose.yaml` で次のように定義されています。
 
 ```yaml
 services:
@@ -82,27 +82,27 @@ services:
     working_dir: /data
 ```
 
-Pandoc 本体や依存関係を `controller` イメージに組み込む必要はありません。Pandoc のバージョンも image tag を変更するだけで個別に更新できます。
+Pandoc 本体やその依存関係を `controller` イメージに組み込む必要はありません。Pandoc のバージョンも、アプリケーションとは独立して image tag だけで変更できます。
 
-ローカルに Go がインストールされていれば、同じプログラムをホストから直接実行することもできます。
+ローカルに Go がインストールされていれば、同じプログラムをホストから直接実行できます。
 
 ```bash
 go run ./example
 ```
 
-この場合、Go プログラムはホスト上で動作し、Pandoc だけがコンテナで実行されます。
+この場合は Go プログラムだけがホスト上で動作し、Pandoc はコンテナ内で実行されます。
 
 ## Why compose-exec?
 
-`compose-exec` は、Go プログラムから1つ以上のツールをコンテナで実行し、その実行環境を Compose 側で管理したい場合に向いています。
+`compose-exec` は、Go プログラムからコンテナ化したツールを実行し、その実行環境を Compose で管理したい場合に向いています。
 
-例えば、次のような用途に使えます。
+例えば、次のような用途があります。
 
-* ツール本体や依存関係を、それぞれ別のコンテナイメージに分離する
+* ツール本体と依存関係を、それぞれ独立したコンテナイメージに分離する
 * ツールのバージョンをアプリケーションとは独立して更新する
 * stdin、stdout、stderr、`context.Context` を `os/exec` に近い API で扱う
 
-複数のコンテナ化されたツールを呼び出す、ボット、エージェント、CI用ヘルパー、自動化サービスなどでは特に使いやすい構成です。
+複数のコンテナ化されたツールを呼び出すボット、エージェント、CI ヘルパー、自動化サービスなどで利用できます。
 
 ## Usage
 
@@ -132,7 +132,7 @@ func main() {
 
 `Command()` と `CommandContext()` は、カレントディレクトリから Compose project を読み込みます。
 
-同じ project から複数のコマンドを実行する場合は、一度だけ読み込んで再利用できます。
+同じ project から複数のコマンドを実行する場合は、project を一度だけ読み込んで再利用できます。
 
 ```go
 project, err := compose.LoadProject(ctx, ".")
@@ -145,11 +145,11 @@ cmd := project.CommandContext(ctx, "tool", "--version")
 
 ## Docker-outside-of-Docker
 
-Go プログラム自体をコンテナ内で実行し、ホストの Docker daemon を利用することもできます。
+Go プログラム自体をコンテナ内で実行し、ホストの Docker daemon を利用する構成にも対応できます。
 
-この構成では、`controller` はマウントした Docker socket を使い、`compose.yaml` のサービス定義から sibling container を起動します。
+この構成では、`controller` からホストの Docker socket に接続し、`compose.yaml` のサービス定義を使って sibling container を起動します。
 
-Docker socket をマウントし、project directory はホストと `controller` コンテナ内で同じ絶対パスに配置します。
+Docker socket に加えて project directory もマウントし、ホストと `controller` コンテナ内で同じ絶対パスになるようにします。
 
 ```yaml
 services:
@@ -163,11 +163,11 @@ services:
       - PWD=${PWD}
 ```
 
-`compose.yaml` の bind mount が正しいホスト側のパスを参照できるよう、project directory のパスを揃える必要があります。
+同じ絶対パスに配置する必要があるのは、`compose.yaml` に書かれた bind mount のパスを Docker daemon がホスト側のパスとして解釈するためです。
 
 ## Compose support
 
-`compose-exec` は、コンテナ化されたツールや関連サービスを実行する際によく使う Compose の設定に対応しています。
+`compose-exec` は、コンテナ化したツールとその関連サービスを実行するために必要な Compose 設定の一部に対応しています。
 
 主な制限事項:
 

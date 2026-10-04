@@ -141,6 +141,10 @@ if err != nil {
 cmd := project.CommandContext(ctx, "tool", "--version")
 ```
 
+Docker endpoint selection follows Docker CLI conventions, including
+`DOCKER_HOST`, `DOCKER_CONTEXT`, and the current context from the Docker CLI
+configuration.
+
 ## Docker-outside-of-Docker
 
 The Go program can itself run inside a container while using the host Docker daemon.
@@ -152,7 +156,7 @@ Mount the Docker socket and keep the project at the same absolute path on the ho
 ```yaml
 services:
   controller:
-    image: golang:1.25
+    image: golang:1.26
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - .:${PWD}
@@ -161,7 +165,11 @@ services:
       - PWD=${PWD}
 ```
 
-Using the same path allows bind mounts in `compose.yaml` to refer to the correct host paths.
+The project must use the same absolute path because bind-mount source paths in
+`compose.yaml` are interpreted by the Docker daemon as host paths.
+
+Access to the Docker socket gives the controller broad control over the Docker
+daemon and should be treated as a privileged capability.
 
 ## Compose support
 
