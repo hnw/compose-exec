@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	dockertypes "github.com/docker/docker/api/types"
-	"github.com/docker/docker/api/types/container"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/client"
 )
 
 // Wait waits for the started container to exit and returns its exit status.
@@ -129,23 +129,23 @@ func inspectHealthStatus(
 	dc dockerAPI,
 	containerID string,
 ) (healthStatus, error) {
-	j, err := dc.ContainerInspect(ctx, containerID)
+	j, err := dc.ContainerInspect(ctx, containerID, client.ContainerInspectOptions{})
 	if err != nil {
 		return healthStatusPending, err
 	}
-	if j.State == nil {
+	if j.Container.State == nil {
 		return healthStatusPending, errors.New("compose: container state unavailable")
 	}
-	if !j.State.Running {
+	if !j.Container.State.Running {
 		return healthStatusPending, fmt.Errorf(
 			"compose: container stopped (status=%s)",
-			j.State.Status,
+			j.Container.State.Status,
 		)
 	}
-	if j.State.Health == nil {
+	if j.Container.State.Health == nil {
 		return healthStatusPending, errors.New("compose: container has no healthcheck")
 	}
-	switch j.State.Health.Status {
+	switch j.Container.State.Health.Status {
 	case "healthy":
 		return healthStatusHealthy, nil
 	case "unhealthy":
@@ -161,11 +161,11 @@ func captureContainerState(dc dockerAPI, containerID string) *container.State {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	j, err := dc.ContainerInspect(ctx, containerID)
-	if err != nil || j.State == nil {
+	j, err := dc.ContainerInspect(ctx, containerID, client.ContainerInspectOptions{})
+	if err != nil || j.Container.State == nil {
 		return nil
 	}
-	return j.State
+	return j.Container.State
 }
 
 type waitState struct {
@@ -173,7 +173,7 @@ type waitState struct {
 	dc          dockerAPI
 	respCh      <-chan container.WaitResponse
 	errCh       <-chan error
-	attach      *dockertypes.HijackedResponse
+	attach      *client.HijackedResponse
 	ioDone      chan struct{}
 	ioErrCh     chan error
 	stdinDone   chan struct{}
@@ -250,7 +250,7 @@ func waitForExit(
 	}
 }
 
-func closeAttach(attach *dockertypes.HijackedResponse) {
+func closeAttach(attach *client.HijackedResponse) {
 	if attach == nil {
 		return
 	}
@@ -262,7 +262,7 @@ func waitForIO(
 	ctx context.Context,
 	dc dockerAPI,
 	id string,
-	attach *dockertypes.HijackedResponse,
+	attach *client.HijackedResponse,
 	stdinDone chan struct{},
 	ioDone chan struct{},
 	ioErrCh chan error,

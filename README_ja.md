@@ -154,7 +154,7 @@ Docker socket をマウントし、project directory はホストと `controller
 ```yaml
 services:
   controller:
-    image: golang:1.25
+    image: golang:1.26
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - .:${PWD}
@@ -201,8 +201,8 @@ go get github.com/hnw/compose-exec
 
 ## Requirements
 
-* Go 1.24 以降
-* Docker Engine API v1.40 以降
+* Go 1.26 以降
+* Docker Engine 28 以降
 
 ## License
 

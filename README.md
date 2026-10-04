@@ -199,8 +199,8 @@ go get github.com/hnw/compose-exec
 
 ## Requirements
 
-* Go 1.24 or later
-* Docker Engine API v1.40 or later
+* Go 1.26 or later
+* Docker Engine 28 or later
 
 ## License
 

@@ -11,7 +11,7 @@ import (
 	dockercontext "github.com/docker/cli/cli/context/docker"
 	"github.com/docker/cli/cli/context/store"
 	"github.com/docker/cli/opts"
-	"github.com/docker/docker/client"
+	"github.com/moby/moby/client"
 )
 
 const (

@@ -3,12 +3,13 @@ package compose
 import (
 	"context"
 	"fmt"
+	"net"
+	"net/netip"
 	"strings"
 
 	"github.com/compose-spec/compose-go/v2/types"
-	"github.com/docker/docker/api/types/filters"
-	"github.com/docker/docker/api/types/network"
-	"github.com/docker/docker/api/types/volume"
+	"github.com/moby/moby/api/types/network"
+	"github.com/moby/moby/client"
 )
 
 type resolvedNetworking struct {
@@ -24,9 +25,9 @@ type networkSpec struct {
 
 // resolveNetworking determines which network(s) to attach to.
 // It iterates through all networks defined in the service config.
-func (c *Cmd) resolveNetworking(_ context.Context, _ dockerAPI) *resolvedNetworking {
+func (c *Cmd) resolveNetworking(_ context.Context, _ dockerAPI) (*resolvedNetworking, error) {
 	if c.Service.NetworkMode != "" {
-		return nil
+		return nil, nil
 	}
 
 	endpoints := make(map[string]*network.EndpointSettings)
@@ -40,19 +41,27 @@ func (c *Cmd) resolveNetworking(_ context.Context, _ dockerAPI) *resolvedNetwork
 			if netName == "" {
 				continue
 			}
-			endpoints[netName] = endpointSettings(c.Service.Name, svcNetCfg)
+			settings, err := endpointSettings(c.Service.Name, svcNetCfg)
+			if err != nil {
+				return nil, err
+			}
+			endpoints[netName] = settings
 			specs[netName] = networkSpecFor(key, projectNetworks)
 		}
 	} else {
 		netName := resolveNetworkName(projectName, "default", projectNetworks)
 		if netName != "" {
-			endpoints[netName] = endpointSettings(c.Service.Name, nil)
+			settings, err := endpointSettings(c.Service.Name, nil)
+			if err != nil {
+				return nil, err
+			}
+			endpoints[netName] = settings
 			specs[netName] = networkSpecFor("default", projectNetworks)
 		}
 	}
 
 	if len(endpoints) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	return &resolvedNetworking{
@@ -60,7 +69,7 @@ func (c *Cmd) resolveNetworking(_ context.Context, _ dockerAPI) *resolvedNetwork
 			EndpointsConfig: endpoints,
 		},
 		specs: specs,
-	}
+	}, nil
 }
 
 func (c *Cmd) ensureNetworks(
@@ -79,15 +88,15 @@ func (c *Cmd) ensureNetworks(
 			continue
 		}
 
-		list, err := dc.NetworkList(ctx, network.ListOptions{
-			Filters: filters.NewArgs(filters.Arg("name", netName)),
+		list, err := dc.NetworkList(ctx, client.NetworkListOptions{
+			Filters: client.Filters{}.Add("name", netName),
 		})
 		if err != nil {
 			return err
 		}
 
 		exists := false
-		for _, n := range list {
+		for _, n := range list.Items {
 			if n.Name == netName {
 				exists = true
 				break
@@ -98,8 +107,11 @@ func (c *Cmd) ensureNetworks(
 			continue
 		}
 
-		_, err = dc.NetworkCreate(ctx, netName, networkCreateOptions(c.projectName(), spec))
+		createOpts, err := networkCreateOptions(c.projectName(), spec)
 		if err != nil {
+			return err
+		}
+		if _, err = dc.NetworkCreate(ctx, netName, createOpts); err != nil {
 			// If another process already created the network, ignore and continue.
 			if isAlreadyExistsErr(err) {
 				continue
@@ -119,8 +131,11 @@ func networkSpecFor(key string, projectNetworks types.Networks) networkSpec {
 	return spec
 }
 
-func networkCreateOptions(projectName string, spec networkSpec) network.CreateOptions {
-	opts := network.CreateOptions{}
+func networkCreateOptions(
+	projectName string,
+	spec networkSpec,
+) (client.NetworkCreateOptions, error) {
+	opts := client.NetworkCreateOptions{}
 	labels := make(map[string]string)
 
 	if spec.declared {
@@ -135,7 +150,11 @@ func networkCreateOptions(projectName string, spec networkSpec) network.CreateOp
 		opts.Attachable = cfg.Attachable
 		opts.EnableIPv4 = cloneBoolPtr(cfg.EnableIPv4)
 		opts.EnableIPv6 = cloneBoolPtr(cfg.EnableIPv6)
-		opts.IPAM = dockerIPAMConfig(cfg.Ipam)
+		ipam, err := dockerIPAMConfig(cfg.Ipam)
+		if err != nil {
+			return client.NetworkCreateOptions{}, err
+		}
+		opts.IPAM = ipam
 
 		for k, v := range cfg.Labels {
 			labels[k] = v
@@ -152,7 +171,7 @@ func networkCreateOptions(projectName string, spec networkSpec) network.CreateOp
 		opts.Labels = labels
 	}
 
-	return opts
+	return opts, nil
 }
 
 func resolveNetworkName(projectName, networkKey string, projectNetworks types.Networks) string {
@@ -169,29 +188,68 @@ func resolveNetworkName(projectName, networkKey string, projectNetworks types.Ne
 func endpointSettings(
 	serviceName string,
 	cfg *types.ServiceNetworkConfig,
-) *network.EndpointSettings {
+) (*network.EndpointSettings, error) {
 	settings := &network.EndpointSettings{
 		Aliases: endpointAliases(serviceName, cfg),
 	}
 
 	if cfg == nil {
-		return settings
+		return settings, nil
 	}
 	if len(cfg.DriverOpts) > 0 {
 		settings.DriverOpts = copyStringMap(cfg.DriverOpts)
 	}
 	settings.GwPriority = cfg.GatewayPriority
-	settings.MacAddress = cfg.MacAddress
-
-	if cfg.Ipv4Address != "" || cfg.Ipv6Address != "" || len(cfg.LinkLocalIPs) > 0 {
-		settings.IPAMConfig = &network.EndpointIPAMConfig{
-			IPv4Address:  cfg.Ipv4Address,
-			IPv6Address:  cfg.Ipv6Address,
-			LinkLocalIPs: append([]string(nil), cfg.LinkLocalIPs...),
+	if mac := strings.TrimSpace(cfg.MacAddress); mac != "" {
+		hwAddr, err := net.ParseMAC(mac)
+		if err != nil {
+			return nil, fmt.Errorf("compose: invalid mac_address %q: %w", mac, err)
 		}
+		settings.MacAddress = network.HardwareAddr(hwAddr)
 	}
 
-	return settings
+	if cfg.Ipv4Address != "" || cfg.Ipv6Address != "" || len(cfg.LinkLocalIPs) > 0 {
+		ipamConfig := &network.EndpointIPAMConfig{}
+		if cfg.Ipv4Address != "" {
+			addr, err := netip.ParseAddr(cfg.Ipv4Address)
+			if err != nil {
+				return nil, fmt.Errorf(
+					"compose: invalid ipv4_address %q: %w",
+					cfg.Ipv4Address,
+					err,
+				)
+			}
+			ipamConfig.IPv4Address = addr
+		}
+		if cfg.Ipv6Address != "" {
+			addr, err := netip.ParseAddr(cfg.Ipv6Address)
+			if err != nil {
+				return nil, fmt.Errorf(
+					"compose: invalid ipv6_address %q: %w",
+					cfg.Ipv6Address,
+					err,
+				)
+			}
+			ipamConfig.IPv6Address = addr
+		}
+		if len(cfg.LinkLocalIPs) > 0 {
+			ipamConfig.LinkLocalIPs = make([]netip.Addr, 0, len(cfg.LinkLocalIPs))
+			for _, raw := range cfg.LinkLocalIPs {
+				addr, err := netip.ParseAddr(raw)
+				if err != nil {
+					return nil, fmt.Errorf(
+						"compose: invalid link_local_ips entry %q: %w",
+						raw,
+						err,
+					)
+				}
+				ipamConfig.LinkLocalIPs = append(ipamConfig.LinkLocalIPs, addr)
+			}
+		}
+		settings.IPAMConfig = ipamConfig
+	}
+
+	return settings, nil
 }
 
 func endpointAliases(serviceName string, cfg *types.ServiceNetworkConfig) []string {
@@ -221,7 +279,7 @@ func endpointAliases(serviceName string, cfg *types.ServiceNetworkConfig) []stri
 	return out
 }
 
-func dockerIPAMConfig(cfg types.IPAMConfig) *network.IPAM {
+func dockerIPAMConfig(cfg types.IPAMConfig) (*network.IPAM, error) {
 	ipam := &network.IPAM{
 		Driver: strings.TrimSpace(cfg.Driver),
 	}
@@ -231,18 +289,49 @@ func dockerIPAMConfig(cfg types.IPAMConfig) *network.IPAM {
 			if p == nil {
 				continue
 			}
-			ipam.Config = append(ipam.Config, network.IPAMConfig{
-				Subnet:     p.Subnet,
-				IPRange:    p.IPRange,
-				Gateway:    p.Gateway,
-				AuxAddress: copyStringMap(p.AuxiliaryAddresses),
-			})
+			ipamCfg := network.IPAMConfig{}
+			if p.Subnet != "" {
+				subnet, err := netip.ParsePrefix(p.Subnet)
+				if err != nil {
+					return nil, fmt.Errorf("compose: invalid ipam subnet %q: %w", p.Subnet, err)
+				}
+				ipamCfg.Subnet = subnet
+			}
+			if p.IPRange != "" {
+				ipRange, err := netip.ParsePrefix(p.IPRange)
+				if err != nil {
+					return nil, fmt.Errorf("compose: invalid ipam ip_range %q: %w", p.IPRange, err)
+				}
+				ipamCfg.IPRange = ipRange
+			}
+			if p.Gateway != "" {
+				gateway, err := netip.ParseAddr(p.Gateway)
+				if err != nil {
+					return nil, fmt.Errorf("compose: invalid ipam gateway %q: %w", p.Gateway, err)
+				}
+				ipamCfg.Gateway = gateway
+			}
+			if len(p.AuxiliaryAddresses) > 0 {
+				ipamCfg.AuxAddress = make(map[string]netip.Addr, len(p.AuxiliaryAddresses))
+				for name, raw := range p.AuxiliaryAddresses {
+					aux, err := netip.ParseAddr(raw)
+					if err != nil {
+						return nil, fmt.Errorf(
+							"compose: invalid ipam auxiliary address %q: %w",
+							raw,
+							err,
+						)
+					}
+					ipamCfg.AuxAddress[name] = aux
+				}
+			}
+			ipam.Config = append(ipam.Config, ipamCfg)
 		}
 	}
 	if ipam.Driver == "" && len(ipam.Config) == 0 {
-		return nil
+		return nil, nil
 	}
-	return ipam
+	return ipam, nil
 }
 
 func cloneBoolPtr(v *bool) *bool {
@@ -341,7 +430,7 @@ func ensureProjectVolumes(
 		}
 		labels["com.docker.compose.volume"] = volName
 
-		createOpts := volume.CreateOptions{
+		createOpts := client.VolumeCreateOptions{
 			Name:       resolved,
 			Driver:     strings.TrimSpace(volCfg.Driver),
 			DriverOpts: copyStringMap(volCfg.DriverOpts),
@@ -377,7 +466,7 @@ func ensureServiceVolumes(
 		if err := createVolumeIdempotent(
 			ctx,
 			dc,
-			volume.CreateOptions{Name: resolved},
+			client.VolumeCreateOptions{Name: resolved},
 		); err != nil {
 			return err
 		}
@@ -388,7 +477,7 @@ func ensureServiceVolumes(
 func createVolumeIdempotent(
 	ctx context.Context,
 	dc dockerAPI,
-	createOpts volume.CreateOptions,
+	createOpts client.VolumeCreateOptions,
 ) error {
 	_, err := dc.VolumeCreate(ctx, createOpts)
 	if err != nil {

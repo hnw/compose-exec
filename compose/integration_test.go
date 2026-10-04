@@ -18,23 +18,26 @@ import (
 	"time"
 
 	cerrdefs "github.com/containerd/errdefs"
-	dockertypes "github.com/docker/docker/api/types"
-	"github.com/docker/docker/client"
+	"github.com/moby/moby/api/types/common"
+	"github.com/moby/moby/client"
 )
 
 func requireDocker(t *testing.T) {
 	t.Helper()
 
-	cli, err := client.NewClientWithOpts(mustClientOpts(t)...)
+	cli, err := client.New(mustClientOpts(t)...)
 	if err != nil {
 		t.Skipf("docker client unavailable: %v", err)
 	}
 	defer cli.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	if _, err := cli.Ping(ctx); err != nil {
+	// NegotiateAPIVersion exercises the same negotiation the client performs
+	// on its first real request, so an unreachable or incompatible daemon is
+	// detected here.
+	if _, err := cli.Ping(ctx, client.PingOptions{NegotiateAPIVersion: true}); err != nil {
 		t.Skipf("docker daemon not reachable: %v", err)
 	}
 }
@@ -73,7 +76,11 @@ func setupIntegration(t *testing.T) (dir string, svc *Service) {
 		"    volumes:\n" +
 		"      - .:/data\n"
 
-	if err := os.WriteFile(filepath.Join(dir, "docker-compose.yml"), []byte(yaml), 0o644); err != nil {
+	if err := os.WriteFile(
+		filepath.Join(dir, "docker-compose.yml"),
+		[]byte(yaml),
+		0o644,
+	); err != nil {
 		t.Fatalf("write compose yaml: %v", err)
 	}
 
@@ -121,7 +128,11 @@ func setupIntegrationWithComposeYAML(t *testing.T, yaml string) (dir string, pro
 		_ = os.RemoveAll(dir)
 	})
 
-	if err := os.WriteFile(filepath.Join(dir, "docker-compose.yml"), []byte(yaml), 0o644); err != nil {
+	if err := os.WriteFile(
+		filepath.Join(dir, "docker-compose.yml"),
+		[]byte(yaml),
+		0o644,
+	); err != nil {
 		t.Fatalf("write compose yaml: %v", err)
 	}
 
@@ -207,14 +218,14 @@ func TestIntegration_NamedVolumePersistence(t *testing.T) {
 	// Cleanup the created named volume (Down() intentionally does not remove volumes).
 	volName := fmt.Sprintf("%s_%s", proj.Name, "db_data")
 	t.Cleanup(func() {
-		cli, err := client.NewClientWithOpts(mustClientOpts(t)...)
+		cli, err := client.New(mustClientOpts(t)...)
 		if err != nil {
 			return
 		}
 		defer cli.Close()
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		_ = cli.VolumeRemove(ctx, volName, true)
+		_, _ = cli.VolumeRemove(ctx, volName, client.VolumeRemoveOptions{Force: true})
 	})
 
 	token := randToken(t)
@@ -336,7 +347,7 @@ func TestIntegration_SignalPropagationZombiePrevention(t *testing.T) {
 		var ee *ExitError
 		if !errors.As(err, &ee) {
 			// Some Docker errors may wrap; still non-nil is required.
-			var derr dockertypes.ErrorResponse
+			var derr common.ErrorResponse
 			_ = errors.As(err, &derr)
 		}
 	}
@@ -346,7 +357,7 @@ func TestIntegration_Concurrency(t *testing.T) {
 	_, svc := setupIntegration(t)
 
 	// Share a single Docker client across goroutines to stress concurrency.
-	cli, err := client.NewClientWithOpts(mustClientOpts(t)...)
+	cli, err := client.New(mustClientOpts(t)...)
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -466,7 +477,12 @@ func TestIntegration_WaitUntilHealthy(t *testing.T) {
 	defer cancel()
 
 	// Keep the container alive until the healthcheck flips to healthy.
-	cmd := svc.CommandContext(ctx, "sh", "-c", "while [ ! -f /data/healthy ]; do sleep 0.1; done; sleep 1")
+	cmd := svc.CommandContext(
+		ctx,
+		"sh",
+		"-c",
+		"while [ ! -f /data/healthy ]; do sleep 0.1; done; sleep 1",
+	)
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -513,7 +529,8 @@ func TestIntegration_PrivilegedAndCapabilitiesMapping(t *testing.T) {
 	}
 	if err := privSvc.CommandContext(ctx, "sh", "-c", mountCmd).Run(); err != nil {
 		msg := strings.ToLower(err.Error())
-		if strings.Contains(msg, "operation not permitted") || strings.Contains(msg, "permission denied") {
+		if strings.Contains(msg, "operation not permitted") ||
+			strings.Contains(msg, "permission denied") {
 			t.Skipf("privileged operation unsupported in this environment: %v", err)
 		}
 		t.Fatalf("privileged run: %v", err)
@@ -540,15 +557,15 @@ func TestIntegration_PrivilegedAndCapabilitiesMapping(t *testing.T) {
 	if err != nil {
 		t.Fatalf("caps snapshot: %v", err)
 	}
-	j, err := st.dc.ContainerInspect(ctx, st.id)
+	j, err := st.dc.ContainerInspect(ctx, st.id, client.ContainerInspectOptions{})
 	if err != nil {
 		t.Fatalf("caps inspect: %v", err)
 	}
-	if j.HostConfig == nil {
+	if j.Container.HostConfig == nil {
 		t.Fatalf("caps inspect: HostConfig is nil")
 	}
-	capAdd := []string(j.HostConfig.CapAdd)
-	capDrop := []string(j.HostConfig.CapDrop)
+	capAdd := []string(j.Container.HostConfig.CapAdd)
+	capDrop := []string(j.Container.HostConfig.CapDrop)
 	if !containsCapability(capAdd, "NET_ADMIN") {
 		t.Fatalf("CapAdd=%v (expected NET_ADMIN)", capAdd)
 	}
@@ -590,25 +607,25 @@ func TestIntegration_HostConfigSecurityShmAndExtraHostsMapping(t *testing.T) {
 	if err != nil {
 		t.Fatalf("snapshot: %v", err)
 	}
-	j, err := st.dc.ContainerInspect(ctx, st.id)
+	j, err := st.dc.ContainerInspect(ctx, st.id, client.ContainerInspectOptions{})
 	if err != nil {
 		t.Fatalf("inspect: %v", err)
 	}
-	if j.HostConfig == nil {
+	if j.Container.HostConfig == nil {
 		t.Fatalf("inspect: HostConfig is nil")
 	}
 
-	securityOpts := j.HostConfig.SecurityOpt
+	securityOpts := j.Container.HostConfig.SecurityOpt
 	if !containsString(securityOpts, "no-new-privileges:true") &&
 		!containsString(securityOpts, "no-new-privileges=true") {
 		t.Fatalf("SecurityOpt=%v (expected no-new-privileges)", securityOpts)
 	}
 
-	if j.HostConfig.ShmSize != 96*1024*1024 {
-		t.Fatalf("ShmSize=%d want=%d", j.HostConfig.ShmSize, int64(96*1024*1024))
+	if j.Container.HostConfig.ShmSize != 96*1024*1024 {
+		t.Fatalf("ShmSize=%d want=%d", j.Container.HostConfig.ShmSize, int64(96*1024*1024))
 	}
 
-	extraHosts := j.HostConfig.ExtraHosts
+	extraHosts := j.Container.HostConfig.ExtraHosts
 	if !containsString(extraHosts, "example.local:127.0.0.1") {
 		t.Fatalf("ExtraHosts=%v (expected example.local:127.0.0.1)", extraHosts)
 	}
@@ -653,33 +670,34 @@ func TestIntegration_HostConfigDevicesAndCPUMapping(t *testing.T) {
 	if err != nil {
 		t.Fatalf("snapshot: %v", err)
 	}
-	j, err := st.dc.ContainerInspect(ctx, st.id)
+	j, err := st.dc.ContainerInspect(ctx, st.id, client.ContainerInspectOptions{})
 	if err != nil {
 		t.Fatalf("inspect: %v", err)
 	}
-	if j.HostConfig == nil {
+	if j.Container.HostConfig == nil {
 		t.Fatalf("inspect: HostConfig is nil")
 	}
 
 	foundDevice := false
-	for _, d := range j.HostConfig.Devices {
-		if d.PathOnHost == "/dev/null" && d.PathInContainer == "/dev/xnull" && d.CgroupPermissions == "r" {
+	for _, d := range j.Container.HostConfig.Devices {
+		if d.PathOnHost == "/dev/null" && d.PathInContainer == "/dev/xnull" &&
+			d.CgroupPermissions == "r" {
 			foundDevice = true
 			break
 		}
 	}
 	if !foundDevice {
-		t.Fatalf("Devices=%v (expected /dev/null:/dev/xnull:r)", j.HostConfig.Devices)
+		t.Fatalf("Devices=%v (expected /dev/null:/dev/xnull:r)", j.Container.HostConfig.Devices)
 	}
 
-	if j.HostConfig.NanoCPUs != 500_000_000 {
-		t.Fatalf("NanoCPUs=%d want=%d", j.HostConfig.NanoCPUs, int64(500_000_000))
+	if j.Container.HostConfig.NanoCPUs != 500_000_000 {
+		t.Fatalf("NanoCPUs=%d want=%d", j.Container.HostConfig.NanoCPUs, int64(500_000_000))
 	}
-	if j.HostConfig.CPUShares != 512 {
-		t.Fatalf("CPUShares=%d want=%d", j.HostConfig.CPUShares, int64(512))
+	if j.Container.HostConfig.CPUShares != 512 {
+		t.Fatalf("CPUShares=%d want=%d", j.Container.HostConfig.CPUShares, int64(512))
 	}
-	if j.HostConfig.CpusetCpus != "0" {
-		t.Fatalf("CpusetCpus=%q want=%q", j.HostConfig.CpusetCpus, "0")
+	if j.Container.HostConfig.CpusetCpus != "0" {
+		t.Fatalf("CpusetCpus=%q want=%q", j.Container.HostConfig.CpusetCpus, "0")
 	}
 
 	if err := cmd.Wait(); err != nil {
@@ -721,7 +739,7 @@ func TestIntegration_DownRemovesContainers(t *testing.T) {
 		t.Fatalf("Down: %v", err)
 	}
 
-	cli, err := client.NewClientWithOpts(mustClientOpts(t)...)
+	cli, err := client.New(mustClientOpts(t)...)
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -729,7 +747,7 @@ func TestIntegration_DownRemovesContainers(t *testing.T) {
 
 	inspectCtx, cancelInspect := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancelInspect()
-	_, err = cli.ContainerInspect(inspectCtx, containerID)
+	_, err = cli.ContainerInspect(inspectCtx, containerID, client.ContainerInspectOptions{})
 	if err == nil {
 		t.Fatalf("expected container to be removed")
 	}

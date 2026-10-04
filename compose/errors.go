@@ -3,7 +3,7 @@ package compose
 import (
 	"fmt"
 
-	"github.com/docker/docker/api/types/container"
+	"github.com/moby/moby/api/types/container"
 )
 
 // ExitError is returned when a container exits with a non-zero status.

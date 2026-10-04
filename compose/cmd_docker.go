@@ -7,8 +7,8 @@ import (
 	"time"
 
 	cerrdefs "github.com/containerd/errdefs"
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/image"
+	"github.com/containerd/platforms"
+	"github.com/moby/moby/client"
 )
 
 func (c *Cmd) closeDockerIfOwned() {
@@ -49,13 +49,22 @@ func (c *Cmd) ensureDockerClient() (dockerAPI, error) {
 }
 
 func pullImage(ctx context.Context, dc dockerAPI, ref, platform string) error {
-	if _, _, err := dc.ImageInspectWithRaw(ctx, ref); err == nil {
+	if _, err := dc.ImageInspect(ctx, ref); err == nil {
 		return nil
 	} else if !cerrdefs.IsNotFound(err) {
 		return err
 	}
 
-	rc, err := dc.ImagePull(ctx, ref, image.PullOptions{Platform: platform})
+	pullOpts := client.ImagePullOptions{}
+	if platform != "" {
+		p, err := platforms.Parse(platform)
+		if err != nil {
+			return err
+		}
+		pullOpts.Platforms = append(pullOpts.Platforms, p)
+	}
+
+	rc, err := dc.ImagePull(ctx, ref, pullOpts)
 	if err != nil {
 		return err
 	}
@@ -71,10 +80,14 @@ func stopAndKill(ctx context.Context, dc dockerAPI, id string, timeout time.Dura
 	stopCtx, cancel := context.WithTimeout(ctx, timeout+1*time.Second)
 	defer cancel()
 
-	if err := dc.ContainerStop(stopCtx, id, container.StopOptions{Timeout: &seconds}); err != nil {
+	if _, err := dc.ContainerStop(
+		stopCtx,
+		id,
+		client.ContainerStopOptions{Timeout: &seconds},
+	); err != nil {
 		killCtx, cancel2 := context.WithTimeout(ctx, 2*time.Second)
 		defer cancel2()
-		_ = dc.ContainerKill(killCtx, id, "SIGKILL")
+		_, _ = dc.ContainerKill(killCtx, id, client.ContainerKillOptions{Signal: "SIGKILL"})
 	}
 
 	return nil
@@ -83,7 +96,8 @@ func stopAndKill(ctx context.Context, dc dockerAPI, id string, timeout time.Dura
 func forceRemoveContainer(ctx context.Context, dc dockerAPI, id string) error {
 	rmCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	return dc.ContainerRemove(rmCtx, id, container.RemoveOptions{Force: true})
+	_, err := dc.ContainerRemove(rmCtx, id, client.ContainerRemoveOptions{Force: true})
+	return err
 }
 
 func isAlreadyExistsErr(err error) bool {
