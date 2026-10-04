@@ -2,60 +2,86 @@ package compose
 
 import (
 	"context"
-	"io"
 
-	dockertypes "github.com/docker/docker/api/types"
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/image"
-	"github.com/docker/docker/api/types/network"
-	"github.com/docker/docker/api/types/volume"
-	"github.com/docker/docker/client"
-	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/moby/moby/client"
 )
 
+// dockerAPI is the subset of the Docker Engine API client used by compose-exec.
+// The signatures mirror github.com/moby/moby/client (Docker 29 generation).
 type dockerAPI interface {
-	ImageInspectWithRaw(
+	ImageInspect(
 		ctx context.Context,
 		imageID string,
-	) (image.InspectResponse, []byte, error)
-	ImagePull(ctx context.Context, ref string, options image.PullOptions) (io.ReadCloser, error)
+		options ...client.ImageInspectOption,
+	) (client.ImageInspectResult, error)
+	ImagePull(
+		ctx context.Context,
+		ref string,
+		options client.ImagePullOptions,
+	) (client.ImagePullResponse, error)
 
 	ContainerCreate(
 		ctx context.Context,
-		config *container.Config,
-		hostConfig *container.HostConfig,
-		networkingConfig *network.NetworkingConfig,
-		platform *ocispec.Platform,
-		containerName string,
-	) (container.CreateResponse, error)
-	ContainerStart(ctx context.Context, containerID string, options container.StartOptions) error
+		options client.ContainerCreateOptions,
+	) (client.ContainerCreateResult, error)
+	ContainerStart(
+		ctx context.Context,
+		containerID string,
+		options client.ContainerStartOptions,
+	) (client.ContainerStartResult, error)
 	ContainerAttach(
 		ctx context.Context,
 		containerID string,
-		options container.AttachOptions,
-	) (dockertypes.HijackedResponse, error)
+		options client.ContainerAttachOptions,
+	) (client.ContainerAttachResult, error)
 	ContainerWait(
 		ctx context.Context,
 		containerID string,
-		condition container.WaitCondition,
-	) (<-chan container.WaitResponse, <-chan error)
-	ContainerInspect(ctx context.Context, containerID string) (container.InspectResponse, error)
-	ContainerStop(ctx context.Context, containerID string, options container.StopOptions) error
-	ContainerKill(ctx context.Context, containerID string, signal string) error
-	ContainerRemove(ctx context.Context, containerID string, options container.RemoveOptions) error
+		options client.ContainerWaitOptions,
+	) client.ContainerWaitResult
+	ContainerInspect(
+		ctx context.Context,
+		containerID string,
+		options client.ContainerInspectOptions,
+	) (client.ContainerInspectResult, error)
+	ContainerStop(
+		ctx context.Context,
+		containerID string,
+		options client.ContainerStopOptions,
+	) (client.ContainerStopResult, error)
+	ContainerKill(
+		ctx context.Context,
+		containerID string,
+		options client.ContainerKillOptions,
+	) (client.ContainerKillResult, error)
+	ContainerRemove(
+		ctx context.Context,
+		containerID string,
+		options client.ContainerRemoveOptions,
+	) (client.ContainerRemoveResult, error)
 	ContainerList(
 		ctx context.Context,
-		options container.ListOptions,
-	) ([]container.Summary, error)
+		options client.ContainerListOptions,
+	) (client.ContainerListResult, error)
 
-	NetworkList(ctx context.Context, options network.ListOptions) ([]network.Summary, error)
+	NetworkList(
+		ctx context.Context,
+		options client.NetworkListOptions,
+	) (client.NetworkListResult, error)
 	NetworkCreate(
 		ctx context.Context,
 		name string,
-		options network.CreateOptions,
-	) (network.CreateResponse, error)
-	NetworkRemove(ctx context.Context, networkID string) error
-	VolumeCreate(ctx context.Context, options volume.CreateOptions) (volume.Volume, error)
+		options client.NetworkCreateOptions,
+	) (client.NetworkCreateResult, error)
+	NetworkRemove(
+		ctx context.Context,
+		networkID string,
+		options client.NetworkRemoveOptions,
+	) (client.NetworkRemoveResult, error)
+	VolumeCreate(
+		ctx context.Context,
+		options client.VolumeCreateOptions,
+	) (client.VolumeCreateResult, error)
 	Close() error
 }
 
@@ -64,5 +90,5 @@ func newDockerClient() (dockerAPI, error) {
 	if err != nil {
 		return nil, err
 	}
-	return client.NewClientWithOpts(opts...)
+	return client.New(opts...)
 }

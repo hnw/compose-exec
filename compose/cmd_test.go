@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"io"
+	"iter"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -13,12 +15,13 @@ import (
 	"time"
 
 	"github.com/compose-spec/compose-go/v2/types"
-	dockertypes "github.com/docker/docker/api/types"
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/image"
-	"github.com/docker/docker/api/types/mount"
-	"github.com/docker/docker/api/types/network"
-	"github.com/docker/docker/api/types/volume"
+	cerrdefs "github.com/containerd/errdefs"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/jsonstream"
+	"github.com/moby/moby/api/types/mount"
+	"github.com/moby/moby/api/types/network"
+	"github.com/moby/moby/api/types/volume"
+	"github.com/moby/moby/client"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
@@ -31,143 +34,162 @@ type fakeDocker struct {
 	inspectResp container.InspectResponse
 	inspectErr  error
 
+	imageInspectErr error
+	imagePullRef    string
+	imagePullOpts   client.ImagePullOptions
+
 	networkListResp    []network.Summary
 	networkCreateCalls []networkCreateCall
 
-	volumeCreateCalls []volume.CreateOptions
+	volumeCreateCalls []client.VolumeCreateOptions
 }
 
 type networkCreateCall struct {
 	name    string
-	options network.CreateOptions
+	options client.NetworkCreateOptions
 }
 
-func (f *fakeDocker) ImageInspectWithRaw(
+func (f *fakeDocker) ImageInspect(
 	_ context.Context,
 	_ string,
-) (image.InspectResponse, []byte, error) {
-	return image.InspectResponse{}, nil, nil
+	_ ...client.ImageInspectOption,
+) (client.ImageInspectResult, error) {
+	if f.imageInspectErr != nil {
+		return client.ImageInspectResult{}, f.imageInspectErr
+	}
+	return client.ImageInspectResult{}, nil
 }
 
 func (f *fakeDocker) ImagePull(
 	_ context.Context,
-	_ string,
-	_ image.PullOptions,
-) (io.ReadCloser, error) {
-	return io.NopCloser(&nopReader{}), nil
+	ref string,
+	options client.ImagePullOptions,
+) (client.ImagePullResponse, error) {
+	f.imagePullRef = ref
+	f.imagePullOpts = options
+	return fakePullResponse{ReadCloser: io.NopCloser(&nopReader{})}, nil
 }
 
 func (f *fakeDocker) ContainerCreate(
 	_ context.Context,
-	_ *container.Config,
-	_ *container.HostConfig,
-	_ *network.NetworkingConfig,
-	_ *ocispec.Platform,
-	_ string,
-) (container.CreateResponse, error) {
-	return container.CreateResponse{ID: "cid"}, nil
+	_ client.ContainerCreateOptions,
+) (client.ContainerCreateResult, error) {
+	return client.ContainerCreateResult{ID: "cid"}, nil
 }
 
 func (f *fakeDocker) ContainerStart(
 	_ context.Context,
 	_ string,
-	_ container.StartOptions,
-) error {
-	return nil
+	_ client.ContainerStartOptions,
+) (client.ContainerStartResult, error) {
+	return client.ContainerStartResult{}, nil
 }
 
 func (f *fakeDocker) ContainerAttach(
 	_ context.Context,
 	_ string,
-	_ container.AttachOptions,
-) (dockertypes.HijackedResponse, error) {
+	_ client.ContainerAttachOptions,
+) (client.ContainerAttachResult, error) {
 	// Not used in unit tests.
-	return dockertypes.HijackedResponse{}, nil
+	return client.ContainerAttachResult{}, nil
 }
 
 func (f *fakeDocker) ContainerWait(
 	_ context.Context,
 	_ string,
-	_ container.WaitCondition,
-) (<-chan container.WaitResponse, <-chan error) {
+	_ client.ContainerWaitOptions,
+) client.ContainerWaitResult {
 	respCh := make(chan container.WaitResponse, 1)
 	errCh := make(chan error, 1)
 	respCh <- container.WaitResponse{StatusCode: 0}
-	return respCh, errCh
+	return client.ContainerWaitResult{Result: respCh, Error: errCh}
 }
 
 func (f *fakeDocker) ContainerInspect(
 	_ context.Context,
 	_ string,
-) (container.InspectResponse, error) {
+	_ client.ContainerInspectOptions,
+) (client.ContainerInspectResult, error) {
 	if f.inspectErr != nil {
-		return container.InspectResponse{}, f.inspectErr
+		return client.ContainerInspectResult{}, f.inspectErr
 	}
-	return f.inspectResp, nil
+	return client.ContainerInspectResult{Container: f.inspectResp}, nil
 }
 
 func (f *fakeDocker) ContainerStop(
 	_ context.Context,
 	_ string,
-	_ container.StopOptions,
-) error {
+	_ client.ContainerStopOptions,
+) (client.ContainerStopResult, error) {
 	f.stopCalls++
 	if f.stopErr {
-		return context.Canceled
+		return client.ContainerStopResult{}, context.Canceled
 	}
-	return nil
+	return client.ContainerStopResult{}, nil
 }
 
-func (f *fakeDocker) ContainerKill(_ context.Context, _ string, _ string) error {
+func (f *fakeDocker) ContainerKill(
+	_ context.Context,
+	_ string,
+	_ client.ContainerKillOptions,
+) (client.ContainerKillResult, error) {
 	f.killCalls++
-	return nil
+	return client.ContainerKillResult{}, nil
 }
 
 func (f *fakeDocker) ContainerRemove(
 	_ context.Context,
 	_ string,
-	_ container.RemoveOptions,
-) error {
+	_ client.ContainerRemoveOptions,
+) (client.ContainerRemoveResult, error) {
 	f.removeCalls++
-	return nil
+	return client.ContainerRemoveResult{}, nil
 }
 
 func (f *fakeDocker) ContainerList(
 	_ context.Context,
-	_ container.ListOptions,
-) ([]container.Summary, error) {
-	return []container.Summary{}, nil
+	_ client.ContainerListOptions,
+) (client.ContainerListResult, error) {
+	return client.ContainerListResult{Items: []container.Summary{}}, nil
 }
 
 func (f *fakeDocker) NetworkList(
 	_ context.Context,
-	_ network.ListOptions,
-) ([]network.Summary, error) {
-	return append([]network.Summary(nil), f.networkListResp...), nil
+	_ client.NetworkListOptions,
+) (client.NetworkListResult, error) {
+	return client.NetworkListResult{
+		Items: append([]network.Summary(nil), f.networkListResp...),
+	}, nil
 }
 
 func (f *fakeDocker) NetworkCreate(
 	_ context.Context,
 	name string,
-	options network.CreateOptions,
-) (network.CreateResponse, error) {
+	options client.NetworkCreateOptions,
+) (client.NetworkCreateResult, error) {
 	f.networkCreateCalls = append(f.networkCreateCalls, networkCreateCall{
 		name:    name,
 		options: options,
 	})
-	return network.CreateResponse{ID: "fake-network-id"}, nil
+	return client.NetworkCreateResult{ID: "fake-network-id"}, nil
 }
 
-func (f *fakeDocker) NetworkRemove(_ context.Context, _ string) error {
-	return nil
+func (f *fakeDocker) NetworkRemove(
+	_ context.Context,
+	_ string,
+	_ client.NetworkRemoveOptions,
+) (client.NetworkRemoveResult, error) {
+	return client.NetworkRemoveResult{}, nil
 }
 
 func (f *fakeDocker) VolumeCreate(
 	_ context.Context,
-	options volume.CreateOptions,
-) (volume.Volume, error) {
+	options client.VolumeCreateOptions,
+) (client.VolumeCreateResult, error) {
 	f.volumeCreateCalls = append(f.volumeCreateCalls, options)
-	return volume.Volume{Name: options.Name}, nil
+	return client.VolumeCreateResult{
+		Volume: volume.Volume{Name: options.Name},
+	}, nil
 }
 
 func (f *fakeDocker) Close() error {
@@ -177,6 +199,21 @@ func (f *fakeDocker) Close() error {
 type nopReader struct{}
 
 func (n *nopReader) Read(_ []byte) (int, error) { return 0, io.EOF }
+
+// fakePullResponse implements client.ImagePullResponse for unit tests. Only the
+// io.ReadCloser part is exercised by compose-exec; the streaming helpers are
+// no-ops.
+type fakePullResponse struct {
+	io.ReadCloser
+}
+
+func (fakePullResponse) JSONMessages(
+	context.Context,
+) iter.Seq2[jsonstream.Message, error] {
+	return func(func(jsonstream.Message, error) bool) {}
+}
+
+func (fakePullResponse) Wait(context.Context) error { return nil }
 
 func TestCmdContainerConfigsTTY(t *testing.T) {
 	cmd := &Cmd{
@@ -587,7 +624,7 @@ func TestCmd_ensureVolumes_RespectsTopLevelNameAndExternal(t *testing.T) {
 	if len(fd.volumeCreateCalls) != 2 {
 		t.Fatalf("calls=%d want=2", len(fd.volumeCreateCalls))
 	}
-	got := map[string]volume.CreateOptions{}
+	got := map[string]client.VolumeCreateOptions{}
 	for _, call := range fd.volumeCreateCalls {
 		got[call.Name] = call
 	}
@@ -632,7 +669,10 @@ func TestCmd_ensureNetworks_RespectsTopLevelNameAndExternal(t *testing.T) {
 	}
 	c := &Cmd{Service: s.config, service: s}
 
-	plan := c.resolveNetworking(context.Background(), fd)
+	plan, err := c.resolveNetworking(context.Background(), fd)
+	if err != nil {
+		t.Fatalf("resolveNetworking: %v", err)
+	}
 	if plan == nil || plan.config == nil {
 		t.Fatalf("resolveNetworking returned nil")
 	}
@@ -748,12 +788,10 @@ func TestWaitForExit_ClosedErrChStillWaitsForResp(t *testing.T) {
 func TestCmd_WaitUntilHealthy_StopsOnSignalContext(t *testing.T) {
 	fd := &fakeDocker{
 		inspectResp: container.InspectResponse{
-			ContainerJSONBase: &container.ContainerJSONBase{
-				State: &container.State{
-					Running: true,
-					Health: &container.Health{
-						Status: "starting",
-					},
+			State: &container.State{
+				Running: true,
+				Health: &container.Health{
+					Status: "starting",
 				},
 			},
 		},
@@ -992,4 +1030,196 @@ func sameStringMultiset(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+func TestPullImage(t *testing.T) {
+	t.Run("existing image is not pulled", func(t *testing.T) {
+		fd := &fakeDocker{}
+		if err := pullImage(context.Background(), fd, "alpine:latest", "linux/amd64"); err != nil {
+			t.Fatalf("pullImage: %v", err)
+		}
+		if fd.imagePullRef != "" {
+			t.Fatalf("ImagePull called for ref=%q", fd.imagePullRef)
+		}
+	})
+
+	t.Run("inspect error other than not-found is propagated", func(t *testing.T) {
+		inspectErr := errors.New("boom")
+		fd := &fakeDocker{imageInspectErr: inspectErr}
+		if err := pullImage(context.Background(), fd, "alpine:latest", ""); !errors.Is(
+			err,
+			inspectErr,
+		) {
+			t.Fatalf("err=%v want=%v", err, inspectErr)
+		}
+	})
+
+	t.Run("platform is forwarded as an OCI platform", func(t *testing.T) {
+		fd := &fakeDocker{imageInspectErr: cerrdefs.ErrNotFound}
+		if err := pullImage(context.Background(), fd, "alpine:latest", "linux/arm/v7"); err != nil {
+			t.Fatalf("pullImage: %v", err)
+		}
+		if fd.imagePullRef != "alpine:latest" {
+			t.Fatalf("pulled ref=%q want=%q", fd.imagePullRef, "alpine:latest")
+		}
+		want := []ocispec.Platform{{OS: "linux", Architecture: "arm", Variant: "v7"}}
+		if !reflect.DeepEqual(fd.imagePullOpts.Platforms, want) {
+			t.Fatalf("Platforms=%v want=%v", fd.imagePullOpts.Platforms, want)
+		}
+	})
+
+	t.Run("no platform leaves Platforms empty", func(t *testing.T) {
+		fd := &fakeDocker{imageInspectErr: cerrdefs.ErrNotFound}
+		if err := pullImage(context.Background(), fd, "alpine:latest", ""); err != nil {
+			t.Fatalf("pullImage: %v", err)
+		}
+		if len(fd.imagePullOpts.Platforms) != 0 {
+			t.Fatalf("Platforms=%v want empty", fd.imagePullOpts.Platforms)
+		}
+	})
+}
+
+func TestCmd_ServicePorts_Mapping(t *testing.T) {
+	svc := types.ServiceConfig{
+		Ports: []types.ServicePortConfig{
+			{Target: 80, Published: "8080", HostIP: "127.0.0.1", Protocol: "tcp"},
+			{Target: 53, Published: "5353"},
+		},
+	}
+	c := &Cmd{Service: svc}
+
+	exposed, bindings, err := c.servicePorts()
+	if err != nil {
+		t.Fatalf("servicePorts: %v", err)
+	}
+
+	wantExposed := network.PortSet{
+		network.MustParsePort("80/tcp"): {},
+		network.MustParsePort("53/tcp"): {},
+	}
+	if !reflect.DeepEqual(exposed, wantExposed) {
+		t.Fatalf("ExposedPorts=%v want=%v", exposed, wantExposed)
+	}
+
+	hostIP := netip.MustParseAddr("127.0.0.1")
+	wantBindings := network.PortMap{
+		network.MustParsePort("80/tcp"): {
+			{HostIP: hostIP, HostPort: "8080"},
+		},
+		network.MustParsePort("53/tcp"): {
+			{HostPort: "5353"},
+		},
+	}
+	if !reflect.DeepEqual(bindings, wantBindings) {
+		t.Fatalf("PortBindings=%v want=%v", bindings, wantBindings)
+	}
+}
+
+func TestCmd_ServicePorts_InvalidValues(t *testing.T) {
+	t.Run("invalid host_ip", func(t *testing.T) {
+		c := &Cmd{Service: types.ServiceConfig{Ports: []types.ServicePortConfig{
+			{Target: 80, Published: "8080", HostIP: "not-an-ip"},
+		}}}
+		if _, _, err := c.servicePorts(); err == nil {
+			t.Fatal("servicePorts() error = nil, want error")
+		}
+	})
+
+	t.Run("target out of range", func(t *testing.T) {
+		c := &Cmd{Service: types.ServiceConfig{Ports: []types.ServicePortConfig{
+			{Target: 70000},
+		}}}
+		if _, _, err := c.servicePorts(); err == nil {
+			t.Fatal("servicePorts() error = nil, want error")
+		}
+	})
+}
+
+func TestEndpointSettings_NetworkTypes(t *testing.T) {
+	cfg := &types.ServiceNetworkConfig{
+		Ipv4Address:  "10.0.0.7",
+		Ipv6Address:  "fd00::7",
+		LinkLocalIPs: []string{"169.254.1.1"},
+		MacAddress:   "02:42:ac:11:00:02",
+	}
+
+	settings, err := endpointSettings("svc", cfg)
+	if err != nil {
+		t.Fatalf("endpointSettings: %v", err)
+	}
+	if settings.IPAMConfig == nil {
+		t.Fatal("IPAMConfig is nil")
+	}
+	if got := settings.IPAMConfig.IPv4Address; got != netip.MustParseAddr("10.0.0.7") {
+		t.Fatalf("IPv4Address=%v", got)
+	}
+	if got := settings.IPAMConfig.IPv6Address; got != netip.MustParseAddr("fd00::7") {
+		t.Fatalf("IPv6Address=%v", got)
+	}
+	want := []netip.Addr{netip.MustParseAddr("169.254.1.1")}
+	if !reflect.DeepEqual(settings.IPAMConfig.LinkLocalIPs, want) {
+		t.Fatalf("LinkLocalIPs=%v want=%v", settings.IPAMConfig.LinkLocalIPs, want)
+	}
+	if got, want := settings.MacAddress.String(), "02:42:ac:11:00:02"; got != want {
+		t.Fatalf("MacAddress=%q want=%q", got, want)
+	}
+
+	t.Run("invalid values are rejected", func(t *testing.T) {
+		for name, cfg := range map[string]*types.ServiceNetworkConfig{
+			"ipv4_address":   {Ipv4Address: "10.0.0.999"},
+			"ipv6_address":   {Ipv6Address: "fd00::zz"},
+			"link_local_ips": {LinkLocalIPs: []string{"nope"}},
+			"mac_address":    {MacAddress: "zz:zz"},
+		} {
+			if _, err := endpointSettings("svc", cfg); err == nil {
+				t.Errorf("endpointSettings(%s) error = nil, want error", name)
+			}
+		}
+	})
+}
+
+func TestDockerIPAMConfig_NetworkTypes(t *testing.T) {
+	ipam, err := dockerIPAMConfig(types.IPAMConfig{
+		Driver: "default",
+		Config: []*types.IPAMPool{{
+			Subnet:             "10.1.0.0/16",
+			IPRange:            "10.1.1.0/24",
+			Gateway:            "10.1.0.1",
+			AuxiliaryAddresses: map[string]string{"reserved": "10.1.0.2"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("dockerIPAMConfig: %v", err)
+	}
+	if ipam.Driver != "default" || len(ipam.Config) != 1 {
+		t.Fatalf("ipam=%+v", ipam)
+	}
+	cfg := ipam.Config[0]
+	if got := cfg.Subnet.String(); got != "10.1.0.0/16" {
+		t.Fatalf("Subnet=%q want=%q", got, "10.1.0.0/16")
+	}
+	if got := cfg.IPRange.String(); got != "10.1.1.0/24" {
+		t.Fatalf("IPRange=%q want=%q", got, "10.1.1.0/24")
+	}
+	if got := cfg.Gateway.String(); got != "10.1.0.1" {
+		t.Fatalf("Gateway=%q want=%q", got, "10.1.0.1")
+	}
+	if got := cfg.AuxAddress["reserved"].String(); got != "10.1.0.2" {
+		t.Fatalf("AuxAddress=%q want=%q", got, "10.1.0.2")
+	}
+
+	t.Run("invalid values are rejected", func(t *testing.T) {
+		for name, cfg := range map[string]types.IPAMConfig{
+			"subnet":   {Config: []*types.IPAMPool{{Subnet: "10.1.0.0/64"}}},
+			"ip_range": {Config: []*types.IPAMPool{{IPRange: "nope"}}},
+			"gateway":  {Config: []*types.IPAMPool{{Gateway: "nope"}}},
+			"auxiliary_addresses": {Config: []*types.IPAMPool{{
+				AuxiliaryAddresses: map[string]string{"a": "nope"},
+			}}},
+		} {
+			if _, err := dockerIPAMConfig(cfg); err == nil {
+				t.Errorf("dockerIPAMConfig(%s) error = nil, want error", name)
+			}
+		}
+	})
 }

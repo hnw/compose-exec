@@ -9,8 +9,8 @@ import (
 	"syscall"
 
 	"github.com/containerd/platforms"
-	"github.com/docker/docker/api/types/container"
-	networktypes "github.com/docker/docker/api/types/network"
+	"github.com/moby/moby/api/types/network"
+	"github.com/moby/moby/client"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
@@ -102,7 +102,10 @@ func (c *Cmd) Start() (startErr error) {
 		return err
 	}
 
-	networkingCfg := c.resolveNetworking(sigCtx, dc)
+	networkingCfg, err := c.resolveNetworking(sigCtx, dc)
+	if err != nil {
+		return err
+	}
 
 	if networkingCfg != nil {
 		if netErr := c.ensureNetworks(sigCtx, dc, networkingCfg); netErr != nil {
@@ -114,7 +117,7 @@ func (c *Cmd) Start() (startErr error) {
 		return volErr
 	}
 
-	netCfg := (*networktypes.NetworkingConfig)(nil)
+	netCfg := (*network.NetworkingConfig)(nil)
 	if networkingCfg != nil {
 		netCfg = networkingCfg.config
 	}
@@ -126,18 +129,20 @@ func (c *Cmd) Start() (startErr error) {
 
 	createResp, err := dc.ContainerCreate(
 		sigCtx,
-		cfg,
-		hostCfg,
-		netCfg,
-		platform,
-		containerName,
+		client.ContainerCreateOptions{
+			Config:           cfg,
+			HostConfig:       hostCfg,
+			NetworkingConfig: netCfg,
+			Platform:         platform,
+			Name:             containerName,
+		},
 	)
 	if err != nil {
 		return err
 	}
 	c.storeContainerID(createResp.ID)
 
-	attachResp, err := dc.ContainerAttach(sigCtx, createResp.ID, container.AttachOptions{
+	attachResp, err := dc.ContainerAttach(sigCtx, createResp.ID, client.ContainerAttachOptions{
 		Stream: true,
 		Stdin:  stdinEnabled(c.Stdin),
 		Stdout: true,
@@ -148,16 +153,19 @@ func (c *Cmd) Start() (startErr error) {
 		_ = forceRemoveContainer(context.Background(), dc, createResp.ID)
 		return err
 	}
-	c.storeAttachState(&attachResp)
+	c.storeAttachState(&attachResp.HijackedResponse)
 
 	stdout, stderr := c.normalizedWriters()
 	// Ensure stdout/stderr forwarder is running before starting the container.
-	ioReady := c.startForwarding(attachResp, stdout, stderr)
+	ioReady := c.startForwarding(attachResp.HijackedResponse, stdout, stderr)
 	<-ioReady
 
-	err = dc.ContainerStart(sigCtx, createResp.ID, container.StartOptions{})
-	if err != nil {
-		closeAttach(&attachResp)
+	if _, err := dc.ContainerStart(
+		sigCtx,
+		createResp.ID,
+		client.ContainerStartOptions{},
+	); err != nil {
+		closeAttach(&attachResp.HijackedResponse)
 		_ = forceRemoveContainer(context.Background(), dc, createResp.ID)
 		return err
 	}

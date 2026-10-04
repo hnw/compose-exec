@@ -22,7 +22,7 @@ import (
 	"github.com/docker/cli/cli/config"
 	dockercontext "github.com/docker/cli/cli/context/docker"
 	"github.com/docker/cli/cli/context/store"
-	"github.com/docker/docker/client"
+	"github.com/moby/moby/client"
 )
 
 // useTempConfigDir points the Docker CLI config directory to a temporary
@@ -323,7 +323,7 @@ func TestDockerClientOpts(t *testing.T) {
 
 	t.Run("DOCKER_HOST", func(t *testing.T) {
 		t.Setenv("DOCKER_HOST", "unix:///custom/docker.sock")
-		cli, err := client.NewClientWithOpts(mustClientOpts(t)...)
+		cli, err := client.New(mustClientOpts(t)...)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -354,7 +354,7 @@ func TestDockerClientOpts(t *testing.T) {
 		}
 		writeConfigFile(t, configDir, "myctx")
 
-		cli, err := client.NewClientWithOpts(mustClientOpts(t)...)
+		cli, err := client.New(mustClientOpts(t)...)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -376,6 +376,196 @@ func TestDockerClientOpts(t *testing.T) {
 			t.Fatal("dockerClientOpts() error = nil, want error")
 		}
 	})
+}
+
+// TestDockerClientOptsNamedContexts covers the endpoint sources that are
+// resolved through the Docker context store: DOCKER_CONTEXT, the precedence
+// against DOCKER_HOST, the default context, and SSH endpoints.
+func TestDockerClientOptsNamedContexts(t *testing.T) {
+	t.Setenv("DOCKER_HOST", "")
+	t.Setenv("DOCKER_TLS", "")
+	t.Setenv("DOCKER_TLS_VERIFY", "")
+	t.Setenv("DOCKER_CERT_PATH", "")
+	t.Setenv("DOCKER_CONTEXT", "")
+
+	t.Run("DOCKER_CONTEXT selects a named context", func(t *testing.T) {
+		configDir := useTempConfigDir(t)
+		writeNamedContext(t, "ctx-env", "unix:///tmp/from-env-context.sock")
+		// The currentContext in the config file must be ignored in favor of
+		// DOCKER_CONTEXT.
+		writeConfigFile(t, configDir, "myctx")
+		t.Setenv("DOCKER_CONTEXT", "ctx-env")
+
+		cli, err := client.New(mustClientOpts(t)...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := cli.DaemonHost(); got != "unix:///tmp/from-env-context.sock" {
+			t.Errorf("Endpoint() = %q, want %q", got, "unix:///tmp/from-env-context.sock")
+		}
+	})
+
+	t.Run("DOCKER_HOST wins over DOCKER_CONTEXT", func(t *testing.T) {
+		useTempConfigDir(t)
+		writeNamedContext(t, "ctx-env", "unix:///tmp/from-env-context.sock")
+		t.Setenv("DOCKER_HOST", "unix:///custom/docker.sock")
+		t.Setenv("DOCKER_CONTEXT", "ctx-env")
+
+		cli, err := client.New(mustClientOpts(t)...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := cli.DaemonHost(); got != "unix:///custom/docker.sock" {
+			t.Errorf("Endpoint() = %q, want %q", got, "unix:///custom/docker.sock")
+		}
+	})
+
+	t.Run("default context falls back to the platform default", func(t *testing.T) {
+		useTempConfigDir(t)
+		if runtime.GOOS == "windows" {
+			t.Skip("platform default differs on windows")
+		}
+
+		cli, err := client.New(mustClientOpts(t)...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := cli.DaemonHost(); got != "unix:///var/run/docker.sock" {
+			t.Errorf("Endpoint() = %q, want %q", got, "unix:///var/run/docker.sock")
+		}
+	})
+
+	t.Run("ssh context is proxied through the connection helper", func(t *testing.T) {
+		useTempConfigDir(t)
+		writeNamedContext(t, "sshctx", "ssh://user@example.com")
+		t.Setenv("DOCKER_CONTEXT", "sshctx")
+
+		cli, err := client.New(mustClientOpts(t)...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// SSH endpoints are dialed through the Docker CLI connection helper,
+		// so the client talks to a synthetic HTTP host.
+		if got, want := cli.DaemonHost(), "http://docker.example.com"; got != want {
+			t.Errorf("Endpoint() = %q, want %q", got, want)
+		}
+		if cli.Dialer() == nil {
+			t.Error("Dialer() = nil, want an ssh dialer")
+		}
+	})
+}
+
+// writeNamedContext stores a Docker endpoint context named name in the
+// currently configured context store.
+func writeNamedContext(t *testing.T, name, host string) {
+	t.Helper()
+	s := store.New(config.ContextStoreDir(), store.NewConfig(
+		nil,
+		store.EndpointTypeGetter(
+			dockercontext.DockerEndpoint,
+			func() any { return &dockercontext.EndpointMeta{} },
+		),
+	))
+	err := s.CreateOrUpdate(store.Metadata{
+		Name: name,
+		Endpoints: map[string]any{
+			dockercontext.DockerEndpoint: dockercontext.EndpointMeta{
+				Host: host,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// newAPIVersionEchoServer starts a minimal stand-in for the Docker daemon that
+// advertises serverAPIVersion through the Api-Version response header. It
+// returns the server and a channel receiving the path of every versioned API
+// request. The unversioned /_ping used for negotiation is not reported.
+func newAPIVersionEchoServer(
+	t *testing.T,
+	serverAPIVersion string,
+) (*httptest.Server, <-chan string) {
+	t.Helper()
+	apiPaths := make(chan string, 1)
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("API-Version", serverAPIVersion)
+		if r.URL.Path == "/_ping" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		apiPaths <- r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("[]"))
+	})), apiPaths
+}
+
+// TestDockerClientAPIVersionNegotiation verifies that compose-exec does not pin
+// an API version: without DOCKER_API_VERSION the client negotiates down to the
+// version reported by the daemon, and DOCKER_API_VERSION still pins it.
+func TestDockerClientAPIVersionNegotiation(t *testing.T) {
+	tests := []struct {
+		name            string
+		dockerAPIVer    string
+		serverAPIVer    string
+		wantRequestPath string
+	}{
+		{
+			name:            "negotiates down to the daemon API version",
+			serverAPIVer:    "1.45",
+			wantRequestPath: "/v1.45/containers/json",
+		},
+		{
+			name:            "keeps the newest negotiated version",
+			serverAPIVer:    client.MaxAPIVersion,
+			wantRequestPath: "/v" + client.MaxAPIVersion + "/containers/json",
+		},
+		{
+			name:            "DOCKER_API_VERSION pins the version",
+			dockerAPIVer:    "1.48",
+			serverAPIVer:    "1.54",
+			wantRequestPath: "/v1.48/containers/json",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			useTempConfigDir(t)
+			t.Setenv("DOCKER_HOST", "")
+			t.Setenv("DOCKER_TLS", "")
+			t.Setenv("DOCKER_TLS_VERIFY", "")
+			t.Setenv("DOCKER_CERT_PATH", "")
+			t.Setenv("DOCKER_CONTEXT", "")
+			t.Setenv(client.EnvOverrideAPIVersion, tt.dockerAPIVer)
+
+			srv, apiPaths := newAPIVersionEchoServer(t, tt.serverAPIVer)
+			defer srv.Close()
+			t.Setenv("DOCKER_HOST", "tcp://"+srv.Listener.Addr().String())
+
+			cli, err := newDockerClient()
+			if err != nil {
+				t.Fatalf("newDockerClient: %v", err)
+			}
+			defer func() { _ = cli.Close() }()
+
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if _, err := cli.ContainerList(ctx, client.ContainerListOptions{}); err != nil {
+				t.Fatalf("ContainerList: %v", err)
+			}
+
+			select {
+			case got := <-apiPaths:
+				if got != tt.wantRequestPath {
+					t.Fatalf("request path = %q, want %q", got, tt.wantRequestPath)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("no versioned API request was recorded")
+			}
+		})
+	}
 }
 
 // writeValidCertificates writes a self-signed CA and a client certificate
@@ -464,7 +654,7 @@ func writeValidCertificates(t *testing.T, dir string) (*x509.Certificate, tls.Ce
 
 // TestDockerClientOptsTLSEndToEnd verifies that the endpoint built from the
 // legacy TLS env vars survives the full production path:
-// defaultContextEndpoint -> Endpoint.ClientOpts -> client.NewClientWithOpts,
+// defaultContextEndpoint -> Endpoint.ClientOpts -> client.New,
 // by performing an actual TLS handshake against a local test server. The
 // server requires a client certificate signed by the same CA, so a successful
 // Ping proves that the CA, the client certificate, and TLS verification were
@@ -494,15 +684,15 @@ func TestDockerClientOptsTLSEndToEnd(t *testing.T) {
 	t.Setenv("DOCKER_TLS_VERIFY", "1")
 	t.Setenv("DOCKER_CERT_PATH", "")
 
-	cli, err := client.NewClientWithOpts(mustClientOpts(t)...)
+	cli, err := client.New(mustClientOpts(t)...)
 	if err != nil {
-		t.Fatalf("NewClientWithOpts: %v", err)
+		t.Fatalf("client.New: %v", err)
 	}
 	defer func() { _ = cli.Close() }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if _, err := cli.Ping(ctx); err != nil {
+	if _, err := cli.Ping(ctx, client.PingOptions{}); err != nil {
 		t.Fatalf("Ping over TLS: %v", err)
 	}
 }

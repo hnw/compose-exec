@@ -4,15 +4,16 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/compose-spec/compose-go/v2/types"
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/mount"
-	"github.com/docker/go-connections/nat"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/mount"
+	"github.com/moby/moby/api/types/network"
 )
 
 func (c *Cmd) containerConfigs(
@@ -25,7 +26,10 @@ func (c *Cmd) containerConfigs(
 		initEnabled = *c.Service.Init
 	}
 
-	exposedPorts, portBindings := c.servicePorts()
+	exposedPorts, portBindings, err := c.servicePorts()
+	if err != nil {
+		return nil, nil, err
+	}
 
 	workingDir := c.Service.WorkingDir
 	if c.WorkingDir != "" {
@@ -137,9 +141,9 @@ func (c *Cmd) containerConfigs(
 	return cfg, hostCfg, nil
 }
 
-func (c *Cmd) servicePorts() (nat.PortSet, nat.PortMap) {
-	exposedPorts := nat.PortSet{}
-	portBindings := nat.PortMap{}
+func (c *Cmd) servicePorts() (network.PortSet, network.PortMap, error) {
+	exposedPorts := network.PortSet{}
+	portBindings := network.PortMap{}
 
 	for _, p := range c.Service.Ports {
 		proto := p.Protocol
@@ -147,18 +151,36 @@ func (c *Cmd) servicePorts() (nat.PortSet, nat.PortMap) {
 			proto = "tcp"
 		}
 
-		portKey := nat.Port(fmt.Sprintf("%d/%s", p.Target, proto))
+		portKey, err := network.ParsePort(fmt.Sprintf("%d/%s", p.Target, proto))
+		if err != nil {
+			return nil, nil, fmt.Errorf(
+				"compose: invalid container port %d/%s: %w",
+				p.Target,
+				proto,
+				err,
+			)
+		}
 		exposedPorts[portKey] = struct{}{}
 
 		if p.Published != "" {
-			binding := nat.PortBinding{
-				HostIP:   p.HostIP,
+			binding := network.PortBinding{
 				HostPort: p.Published,
+			}
+			if p.HostIP != "" {
+				hostIP, err := netip.ParseAddr(p.HostIP)
+				if err != nil {
+					return nil, nil, fmt.Errorf(
+						"compose: invalid host_ip %q: %w",
+						p.HostIP,
+						err,
+					)
+				}
+				binding.HostIP = hostIP
 			}
 			portBindings[portKey] = append(portBindings[portKey], binding)
 		}
 	}
-	return exposedPorts, portBindings
+	return exposedPorts, portBindings, nil
 }
 
 func (c *Cmd) serviceLabels() map[string]string {

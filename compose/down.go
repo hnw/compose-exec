@@ -6,9 +6,7 @@ import (
 	"strings"
 
 	cerrdefs "github.com/containerd/errdefs"
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/filters"
-	"github.com/docker/docker/api/types/network"
+	"github.com/moby/moby/client"
 )
 
 // Down cleans up all resources (containers and networks) associated with the project.
@@ -29,18 +27,16 @@ func Down(ctx context.Context, projectName string) error {
 	// ---------------------------------------------------------
 	// 1. Remove Containers (MUST be done before removing networks)
 	// ---------------------------------------------------------
-	containers, err := cli.ContainerList(ctx, container.ListOptions{
-		All: true,
-		Filters: filters.NewArgs(
-			filters.Arg("label", "com.docker.compose.project="+projectName),
-		),
+	containers, err := cli.ContainerList(ctx, client.ContainerListOptions{
+		All:     true,
+		Filters: client.Filters{}.Add("label", "com.docker.compose.project="+projectName),
 	})
 	if err != nil {
 		return fmt.Errorf("compose: failed to list containers: %w", err)
 	}
 
-	for _, c := range containers {
-		rmErr := cli.ContainerRemove(ctx, c.ID, container.RemoveOptions{Force: true})
+	for _, c := range containers.Items {
+		_, rmErr := cli.ContainerRemove(ctx, c.ID, client.ContainerRemoveOptions{Force: true})
 		if rmErr == nil {
 			continue
 		}
@@ -54,14 +50,14 @@ func Down(ctx context.Context, projectName string) error {
 	// ---------------------------------------------------------
 	// 2. Remove Networks
 	// ---------------------------------------------------------
-	list, err := cli.NetworkList(ctx, network.ListOptions{
-		Filters: filters.NewArgs(filters.Arg("label", "com.docker.compose.project="+projectName)),
+	list, err := cli.NetworkList(ctx, client.NetworkListOptions{
+		Filters: client.Filters{}.Add("label", "com.docker.compose.project="+projectName),
 	})
 	if err != nil {
 		errs = append(errs, fmt.Sprintf("failed to list networks: %v", err))
 	} else {
-		for _, n := range list {
-			err := cli.NetworkRemove(ctx, n.ID)
+		for _, n := range list.Items {
+			_, err := cli.NetworkRemove(ctx, n.ID, client.NetworkRemoveOptions{})
 			if err == nil {
 				continue
 			}

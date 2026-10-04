@@ -5,8 +5,8 @@ import (
 	"io"
 	"sync"
 
-	dockertypes "github.com/docker/docker/api/types"
-	"github.com/docker/docker/pkg/stdcopy"
+	"github.com/moby/moby/api/pkg/stdcopy"
+	"github.com/moby/moby/client"
 )
 
 // StdoutPipe returns a pipe that will be connected to the command's standard output.
@@ -139,7 +139,7 @@ func (c *Cmd) closePipes(err error) {
 }
 
 func (c *Cmd) startForwarding(
-	attachResp dockertypes.HijackedResponse,
+	attachResp client.HijackedResponse,
 	stdout,
 	stderr io.Writer,
 ) <-chan struct{} {

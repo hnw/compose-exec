@@ -8,8 +8,8 @@ import (
 	"sync"
 
 	"github.com/compose-spec/compose-go/v2/types"
-	dockertypes "github.com/docker/docker/api/types"
-	"github.com/docker/docker/api/types/container"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/client"
 )
 
 // Cmd represents a pending command execution, similar to os/exec.Cmd.
@@ -45,7 +45,7 @@ type Cmd struct {
 	containerID string
 	waitRespCh  <-chan container.WaitResponse
 	waitErrCh   <-chan error
-	attach      *dockertypes.HijackedResponse
+	attach      *client.HijackedResponse
 	ioDone      chan struct{}
 	ioErrCh     chan error
 	stdinDone   chan struct{}

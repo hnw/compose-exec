@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 
-	dockertypes "github.com/docker/docker/api/types"
-	"github.com/docker/docker/api/types/container"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/client"
 )
 
 func (c *Cmd) contextOrBackground() context.Context {
@@ -68,7 +68,7 @@ func (c *Cmd) storeContainerID(id string) {
 	c.mu.Unlock()
 }
 
-func (c *Cmd) storeAttachState(attachResp *dockertypes.HijackedResponse) {
+func (c *Cmd) storeAttachState(attachResp *client.HijackedResponse) {
 	c.mu.Lock()
 	c.attach = attachResp
 	c.ioDone = make(chan struct{})
@@ -80,14 +80,14 @@ func (c *Cmd) storeAttachState(attachResp *dockertypes.HijackedResponse) {
 func (c *Cmd) storeWait(dc dockerAPI, id string) {
 	// NOTE: Do not use sigCtx for ContainerWait; if sigCtx is canceled by a signal,
 	// Docker may return a context-canceled error instead of letting us stop the container.
-	respCh, errCh := dc.ContainerWait(
+	wait := dc.ContainerWait(
 		context.Background(),
 		id,
-		container.WaitConditionNotRunning,
+		client.ContainerWaitOptions{Condition: container.WaitConditionNotRunning},
 	)
 	c.mu.Lock()
-	c.waitRespCh = respCh
-	c.waitErrCh = errCh
+	c.waitRespCh = wait.Result
+	c.waitErrCh = wait.Error
 	c.mu.Unlock()
 }
 
