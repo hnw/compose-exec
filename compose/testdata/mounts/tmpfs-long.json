@@ -1,0 +1,10 @@
+{
+  "Binds": null,
+  "Mounts": [
+    {
+      "Target": "/target",
+      "Type": "tmpfs"
+    }
+  ],
+  "Tmpfs": null
+}

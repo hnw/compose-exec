@@ -22,3 +22,24 @@ jobs:
 
       - name: Test
         run: go test -v -race -cover -tags=integration ./...
+
+  mount-compatibility:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache: true
+      - name: Install Docker Compose reference version
+        run: |
+          mkdir -p "$HOME/.docker/cli-plugins"
+          curl -fsSL https://github.com/docker/compose/releases/download/v5.0.1/docker-compose-linux-x86_64 -o "$HOME/.docker/cli-plugins/docker-compose"
+          chmod +x "$HOME/.docker/cli-plugins/docker-compose"
+          docker compose version
+      - name: Compare ContainerCreate mount requests
+        env:
+          COMPOSE_EXEC_MOUNT_LIVE: '1'
+        run: go test -v -race ./compose -run '^TestMountSerialization$' -count=1

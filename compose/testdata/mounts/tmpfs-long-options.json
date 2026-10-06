@@ -1,0 +1,15 @@
+{
+  "Binds": null,
+  "Mounts": [
+    {
+      "ReadOnly": true,
+      "Target": "/target",
+      "TmpfsOptions": {
+        "Mode": 1023,
+        "SizeBytes": 1048576
+      },
+      "Type": "tmpfs"
+    }
+  ],
+  "Tmpfs": null
+}

@@ -1,0 +1,14 @@
+{
+  "Binds": null,
+  "Mounts": [
+    {
+      "BindOptions": {
+        "Propagation": "rslave"
+      },
+      "Source": "$PROJECT/data",
+      "Target": "/target",
+      "Type": "bind"
+    }
+  ],
+  "Tmpfs": null
+}

@@ -68,9 +68,9 @@ func (c *Cmd) containerConfigs(
 
 	hostCfg := &container.HostConfig{
 		Init:         ptr(initEnabled),
-		Mounts:       mounts,
 		PortBindings: portBindings,
 	}
+	c.applyMounts(hostCfg, mounts)
 	if len(c.Service.Tmpfs) > 0 {
 		tmpfs := map[string]string{}
 		for _, spec := range c.Service.Tmpfs {
@@ -362,89 +362,4 @@ func serviceEnvSlice(svc types.ServiceConfig) []string {
 		out = append(out, k+"="+*v)
 	}
 	return out
-}
-
-func serviceMounts(
-	svc types.ServiceConfig,
-	baseDir string,
-	projectName string,
-	projectVolumes types.Volumes,
-) ([]mount.Mount, error) {
-	if len(svc.Volumes) == 0 {
-		return nil, nil
-	}
-
-	baseDirAbs := baseDir
-	if baseDirAbs != "" {
-		baseDirAbs, _ = filepath.Abs(baseDirAbs)
-	}
-
-	out := make([]mount.Mount, 0, len(svc.Volumes))
-	for _, v := range svc.Volumes {
-		typeStr := string(v.Type)
-		switch {
-		case typeStr == "" || v.Type == types.VolumeTypeBind:
-			if strings.TrimSpace(v.Source) == "" {
-				return nil, errors.New("compose: bind mount source is required")
-			}
-			src := v.Source
-			if !filepath.IsAbs(src) {
-				src = filepath.Join(baseDirAbs, src)
-			}
-			src, _ = filepath.Abs(src)
-
-			out = append(out, mount.Mount{
-				Type:     mount.TypeBind,
-				Source:   src,
-				Target:   v.Target,
-				ReadOnly: v.ReadOnly,
-			})
-
-		case v.Type == types.VolumeTypeVolume:
-			src := strings.TrimSpace(v.Source)
-			if src != "" {
-				src = resolveVolumeSource(projectName, src, projectVolumes)
-			}
-			out = append(out, mount.Mount{
-				Type:     mount.TypeVolume,
-				Source:   src,
-				Target:   v.Target,
-				ReadOnly: v.ReadOnly,
-			})
-
-		case v.Type == types.VolumeTypeTmpfs:
-			if strings.TrimSpace(v.Target) == "" {
-				return nil, errors.New("compose: tmpfs mount target is required")
-			}
-			tmpfsOptions := (*mount.TmpfsOptions)(nil)
-			if v.Tmpfs != nil {
-				opts := &mount.TmpfsOptions{}
-				if v.Tmpfs.Size > 0 {
-					opts.SizeBytes = int64(v.Tmpfs.Size)
-				}
-				if v.Tmpfs.Mode != 0 {
-					opts.Mode = os.FileMode(v.Tmpfs.Mode)
-				}
-				if opts.SizeBytes != 0 || opts.Mode != 0 || len(opts.Options) > 0 {
-					tmpfsOptions = opts
-				}
-			}
-			out = append(out, mount.Mount{
-				Type:         mount.TypeTmpfs,
-				Target:       v.Target,
-				ReadOnly:     v.ReadOnly,
-				TmpfsOptions: tmpfsOptions,
-			})
-
-		default:
-			return nil, fmt.Errorf(
-				"compose: unsupported volume type %q (supported: bind, volume, tmpfs)",
-				typeStr,
-			)
-		}
-	}
-	if len(out) == 0 {
-		return nil, nil
-	}
-	return out, nil
 }

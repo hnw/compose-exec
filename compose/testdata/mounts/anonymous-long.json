@@ -1,0 +1,14 @@
+{
+  "Binds": null,
+  "Mounts": [
+    {
+      "ReadOnly": true,
+      "Target": "/target",
+      "Type": "volume",
+      "VolumeOptions": {
+        "NoCopy": true
+      }
+    }
+  ],
+  "Tmpfs": null
+}

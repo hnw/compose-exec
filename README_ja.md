@@ -193,6 +193,8 @@ services:
 
 上記以外の Compose 設定はサポート対象外です。
 
+mount リクエストは、対応している bind、volume、tmpfs について Docker Compose の serialization に合わせて生成します。bind の propagation/recursive、volume の nocopy/subpath/labels に対応します。基準とするバージョン、選択規則、検証方法は[互換性テストの捕捉結果](compose/testdata/mounts/README.md)を参照してください。
+
 ## Installation
 
 ```bash

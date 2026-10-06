@@ -1,0 +1,16 @@
+{
+  "Binds": null,
+  "Mounts": [
+    {
+      "Source": "mountprobe_cache",
+      "Target": "/target",
+      "Type": "volume",
+      "VolumeOptions": {
+        "Labels": {
+          "purpose": "test"
+        }
+      }
+    }
+  ],
+  "Tmpfs": null
+}

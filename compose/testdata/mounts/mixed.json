@@ -1,0 +1,23 @@
+{
+  "Binds": [
+    "$PROJECT/data:/bind:rw",
+    "mountprobe_cache:/volume:rw"
+  ],
+  "Mounts": [
+    {
+      "Target": "/anonymous",
+      "Type": "volume",
+      "VolumeOptions": {}
+    },
+    {
+      "Target": "/memory",
+      "TmpfsOptions": {
+        "SizeBytes": 1048576
+      },
+      "Type": "tmpfs"
+    }
+  ],
+  "Tmpfs": {
+    "/tmp": "size=1m,mode=1777"
+  }
+}
