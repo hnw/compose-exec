@@ -1,0 +1,16 @@
+{
+  "Binds": null,
+  "Mounts": [
+    {
+      "BindOptions": {
+        "CreateMountpoint": true,
+        "Propagation": "rshared"
+      },
+      "ReadOnly": true,
+      "Source": "$PROJECT/data",
+      "Target": "/target",
+      "Type": "bind"
+    }
+  ],
+  "Tmpfs": null
+}

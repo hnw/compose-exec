@@ -1,0 +1,13 @@
+{
+  "Binds": null,
+  "Mounts": [
+    {
+      "BindOptions": {},
+      "Consistency": "cached",
+      "Source": "$PROJECT/data",
+      "Target": "/target",
+      "Type": "bind"
+    }
+  ],
+  "Tmpfs": null
+}

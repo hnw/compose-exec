@@ -1,0 +1,7 @@
+{
+  "Binds": [
+    "mountprobe_labeled:/target:rw"
+  ],
+  "Mounts": null,
+  "Tmpfs": null
+}

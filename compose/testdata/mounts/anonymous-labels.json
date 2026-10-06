@@ -1,0 +1,15 @@
+{
+  "Binds": null,
+  "Mounts": [
+    {
+      "Target": "/target",
+      "Type": "volume",
+      "VolumeOptions": {
+        "Labels": {
+          "purpose": "test"
+        }
+      }
+    }
+  ],
+  "Tmpfs": null
+}

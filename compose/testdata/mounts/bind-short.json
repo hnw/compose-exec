@@ -1,0 +1,7 @@
+{
+  "Binds": [
+    "$PROJECT/data:/target:rw"
+  ],
+  "Mounts": null,
+  "Tmpfs": null
+}

@@ -1,0 +1,15 @@
+{
+  "Binds": null,
+  "Mounts": [
+    {
+      "BindOptions": {
+        "ReadOnlyNonRecursive": true
+      },
+      "ReadOnly": true,
+      "Source": "$PROJECT/data",
+      "Target": "/target",
+      "Type": "bind"
+    }
+  ],
+  "Tmpfs": null
+}

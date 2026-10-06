@@ -199,6 +199,8 @@ Supported service fields include:
 
 Other Compose fields are outside the supported scope.
 
+Mount requests follow Docker Compose serialization for supported bind, volume, and tmpfs mounts, including bind propagation/recursion and volume nocopy/subpath/labels. See [the captured compatibility cases](compose/testdata/mounts/README.md) for the reference version, selection rules, and test commands.
+
 ## Installation
 
 ```bash

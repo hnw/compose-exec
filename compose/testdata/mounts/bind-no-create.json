@@ -1,0 +1,12 @@
+{
+  "Binds": null,
+  "Mounts": [
+    {
+      "BindOptions": {},
+      "Source": "$PROJECT/data",
+      "Target": "/target",
+      "Type": "bind"
+    }
+  ],
+  "Tmpfs": null
+}
