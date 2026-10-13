@@ -77,7 +77,7 @@ func (c *Cmd) Start() (startErr error) {
 	}()
 
 	// Pull image (build is out of scope).
-	err = pullImage(sigCtx, dc, c.Service.Image, c.Service.Platform)
+	err = pullImage(sigCtx, dc, c.Service)
 	if err != nil {
 		return err
 	}

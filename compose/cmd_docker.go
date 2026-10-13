@@ -2,10 +2,11 @@ package compose
 
 import (
 	"context"
-	"io"
+	"fmt"
 	"strings"
 	"time"
 
+	"github.com/compose-spec/compose-go/v2/types"
 	cerrdefs "github.com/containerd/errdefs"
 	"github.com/containerd/platforms"
 	"github.com/moby/moby/client"
@@ -48,31 +49,85 @@ func (c *Cmd) ensureDockerClient() (dockerAPI, error) {
 	return cli, nil
 }
 
-func pullImage(ctx context.Context, dc dockerAPI, ref, platform string) error {
-	if _, err := dc.ImageInspect(ctx, ref); err == nil {
-		return nil
-	} else if !cerrdefs.IsNotFound(err) {
+func imagePullRequired(
+	ctx context.Context,
+	dc dockerAPI,
+	service types.ServiceConfig,
+	now time.Time,
+) (bool, error) {
+	policy, duration, err := service.GetPullPolicy()
+	if err != nil {
+		return false, fmt.Errorf("compose: invalid pull_policy %q: %w", service.PullPolicy, err)
+	}
+	// GetPullPolicy treats unknown values as missing.
+	switch service.PullPolicy {
+	case "", types.PullPolicyAlways, types.PullPolicyNever, types.PullPolicyMissing,
+		types.PullPolicyIfNotPresent, "daily", "weekly":
+	case types.PullPolicyBuild:
+		return false, fmt.Errorf(
+			"compose: pull_policy %q is not supported (use a pre-built image)",
+			service.PullPolicy,
+		)
+	default:
+		if !strings.HasPrefix(service.PullPolicy, "every_") {
+			return false, fmt.Errorf("compose: invalid pull_policy %q", service.PullPolicy)
+		}
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return false, ctxErr
+	}
+	inspected, err := dc.ImageInspect(ctx, service.Image)
+	if err != nil && !cerrdefs.IsNotFound(err) {
+		return false, err
+	}
+	switch policy {
+	case types.PullPolicyAlways:
+		return true, nil
+	case types.PullPolicyNever:
+		if err != nil {
+			return false, fmt.Errorf(
+				"compose: image %q is unavailable with pull_policy never: %w",
+				service.Image,
+				err,
+			)
+		}
+		return false, nil
+	case types.PullPolicyRefresh:
+		return err != nil || now.After(inspected.Metadata.LastTagTime.Add(duration)), nil
+	default:
+		return err != nil, nil
+	}
+}
+
+func pullImage(ctx context.Context, dc dockerAPI, service types.ServiceConfig) error {
+	required, err := imagePullRequired(ctx, dc, service, time.Now())
+	if err != nil {
 		return err
+	}
+	if !required {
+		return nil
 	}
 
 	pullOpts := client.ImagePullOptions{}
-	if platform != "" {
-		p, err := platforms.Parse(platform)
-		if err != nil {
-			return err
+	if service.Platform != "" {
+		p, parseErr := platforms.Parse(service.Platform)
+		if parseErr != nil {
+			return parseErr
 		}
 		pullOpts.Platforms = append(pullOpts.Platforms, p)
 	}
 
-	rc, err := dc.ImagePull(ctx, ref, pullOpts)
+	rc, err := dc.ImagePull(ctx, service.Image, pullOpts)
 	if err != nil {
 		return err
 	}
 	defer func() {
 		_ = rc.Close()
 	}()
-	_, _ = io.Copy(io.Discard, rc)
-	return nil
+	if waitErr := rc.Wait(ctx); waitErr != nil {
+		return waitErr
+	}
+	return ctx.Err()
 }
 
 func stopAndKill(ctx context.Context, dc dockerAPI, id string, timeout time.Duration) error {

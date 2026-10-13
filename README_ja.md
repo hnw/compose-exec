@@ -176,7 +176,7 @@ services:
 
 対応しているサービス設定:
 
-* `image`, `platform`
+* `image`, `platform`, `pull_policy`
 * `command`, `entrypoint`, `working_dir`
 * `environment`, `env_file`
 * `volumes`, `tmpfs`, `read_only`
@@ -192,6 +192,17 @@ services:
 * `ulimits`, `labels`
 
 上記以外の Compose 設定はサポート対象外です。
+
+例えば、イメージの更新を毎日確認するには、次のように指定します。
+
+```yaml
+services:
+  tool:
+    image: example/tool:latest
+    pull_policy: daily
+```
+
+ポリシーの値は [Compose の pull policy ドキュメント](https://docs.docker.com/reference/compose-file/services/#pull_policy)を参照してください。`pull_policy: build` には対応していません。
 
 mount リクエストは、対応している bind、volume、tmpfs について Docker Compose の serialization に合わせて生成します。bind の propagation/recursive、volume の nocopy/subpath/labels に対応します。基準とするバージョン、選択規則、検証方法は[互換性テストの捕捉結果](compose/testdata/mounts/README.md)を参照してください。
 

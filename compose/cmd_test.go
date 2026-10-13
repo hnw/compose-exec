@@ -34,9 +34,16 @@ type fakeDocker struct {
 	inspectResp container.InspectResponse
 	inspectErr  error
 
-	imageInspectErr error
-	imagePullRef    string
-	imagePullOpts   client.ImagePullOptions
+	imageInspectResp  client.ImageInspectResult
+	imageInspectCalls int
+	imageInspectErr   error
+	imagePullCalls    int
+	imagePullErr      error
+	imagePullResponse client.ImagePullResponse
+	createCalls       int
+	createErr         error
+	imagePullRef      string
+	imagePullOpts     client.ImagePullOptions
 
 	networkListResp    []network.Summary
 	networkCreateCalls []networkCreateCall
@@ -50,14 +57,18 @@ type networkCreateCall struct {
 }
 
 func (f *fakeDocker) ImageInspect(
-	_ context.Context,
+	ctx context.Context,
 	_ string,
 	_ ...client.ImageInspectOption,
 ) (client.ImageInspectResult, error) {
+	f.imageInspectCalls++
+	if err := ctx.Err(); err != nil {
+		return client.ImageInspectResult{}, err
+	}
 	if f.imageInspectErr != nil {
 		return client.ImageInspectResult{}, f.imageInspectErr
 	}
-	return client.ImageInspectResult{}, nil
+	return f.imageInspectResp, nil
 }
 
 func (f *fakeDocker) ImagePull(
@@ -65,8 +76,15 @@ func (f *fakeDocker) ImagePull(
 	ref string,
 	options client.ImagePullOptions,
 ) (client.ImagePullResponse, error) {
+	f.imagePullCalls++
 	f.imagePullRef = ref
 	f.imagePullOpts = options
+	if f.imagePullErr != nil {
+		return nil, f.imagePullErr
+	}
+	if f.imagePullResponse != nil {
+		return f.imagePullResponse, nil
+	}
 	return fakePullResponse{ReadCloser: io.NopCloser(&nopReader{})}, nil
 }
 
@@ -74,7 +92,8 @@ func (f *fakeDocker) ContainerCreate(
 	_ context.Context,
 	_ client.ContainerCreateOptions,
 ) (client.ContainerCreateResult, error) {
-	return client.ContainerCreateResult{ID: "cid"}, nil
+	f.createCalls++
+	return client.ContainerCreateResult{ID: "cid"}, f.createErr
 }
 
 func (f *fakeDocker) ContainerStart(
@@ -200,9 +219,9 @@ type nopReader struct{}
 
 func (n *nopReader) Read(_ []byte) (int, error) { return 0, io.EOF }
 
-// fakePullResponse implements client.ImagePullResponse for unit tests. Only the
-// io.ReadCloser part is exercised by compose-exec; the streaming helpers are
-// no-ops.
+// fakePullResponse implements client.ImagePullResponse for unit tests. The
+// default response represents a successful empty stream. Stream error tests
+// supply a real SDK response backed by an in-memory HTTP transport.
 type fakePullResponse struct {
 	io.ReadCloser
 }
@@ -1035,7 +1054,11 @@ func sameStringMultiset(a, b []string) bool {
 func TestPullImage(t *testing.T) {
 	t.Run("existing image is not pulled", func(t *testing.T) {
 		fd := &fakeDocker{}
-		if err := pullImage(context.Background(), fd, "alpine:latest", "linux/amd64"); err != nil {
+		if err := pullImage(
+			context.Background(),
+			fd,
+			types.ServiceConfig{Image: "alpine:latest", Platform: "linux/amd64"},
+		); err != nil {
 			t.Fatalf("pullImage: %v", err)
 		}
 		if fd.imagePullRef != "" {
@@ -1046,7 +1069,11 @@ func TestPullImage(t *testing.T) {
 	t.Run("inspect error other than not-found is propagated", func(t *testing.T) {
 		inspectErr := errors.New("boom")
 		fd := &fakeDocker{imageInspectErr: inspectErr}
-		if err := pullImage(context.Background(), fd, "alpine:latest", ""); !errors.Is(
+		if err := pullImage(
+			context.Background(),
+			fd,
+			types.ServiceConfig{Image: "alpine:latest"},
+		); !errors.Is(
 			err,
 			inspectErr,
 		) {
@@ -1056,7 +1083,11 @@ func TestPullImage(t *testing.T) {
 
 	t.Run("platform is forwarded as an OCI platform", func(t *testing.T) {
 		fd := &fakeDocker{imageInspectErr: cerrdefs.ErrNotFound}
-		if err := pullImage(context.Background(), fd, "alpine:latest", "linux/arm/v7"); err != nil {
+		if err := pullImage(
+			context.Background(),
+			fd,
+			types.ServiceConfig{Image: "alpine:latest", Platform: "linux/arm/v7"},
+		); err != nil {
 			t.Fatalf("pullImage: %v", err)
 		}
 		if fd.imagePullRef != "alpine:latest" {
@@ -1070,11 +1101,29 @@ func TestPullImage(t *testing.T) {
 
 	t.Run("no platform leaves Platforms empty", func(t *testing.T) {
 		fd := &fakeDocker{imageInspectErr: cerrdefs.ErrNotFound}
-		if err := pullImage(context.Background(), fd, "alpine:latest", ""); err != nil {
+		if err := pullImage(
+			context.Background(),
+			fd,
+			types.ServiceConfig{Image: "alpine:latest"},
+		); err != nil {
 			t.Fatalf("pullImage: %v", err)
 		}
 		if len(fd.imagePullOpts.Platforms) != 0 {
 			t.Fatalf("Platforms=%v want empty", fd.imagePullOpts.Platforms)
+		}
+	})
+
+	t.Run("pull API error is propagated", func(t *testing.T) {
+		pullErr := errors.New("pull API failed")
+		fd := &fakeDocker{imagePullErr: pullErr}
+		err := pullImage(t.Context(), fd, types.ServiceConfig{
+			Image: "tool:latest", PullPolicy: "always",
+		})
+		if !errors.Is(err, pullErr) {
+			t.Fatalf("error=%v want=%v", err, pullErr)
+		}
+		if fd.imagePullCalls != 1 {
+			t.Fatalf("pull calls=%d want=1", fd.imagePullCalls)
 		}
 	})
 }
