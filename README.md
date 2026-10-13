@@ -182,7 +182,7 @@ Notable limitations:
 
 Supported service fields include:
 
-* `image`, `platform`
+* `image`, `platform`, `pull_policy`
 * `command`, `entrypoint`, `working_dir`
 * `environment`, `env_file`
 * `volumes`, `tmpfs`, `read_only`
@@ -198,6 +198,17 @@ Supported service fields include:
 * `ulimits`, `labels`
 
 Other Compose fields are outside the supported scope.
+
+For example, to check for image updates daily:
+
+```yaml
+services:
+  tool:
+    image: example/tool:latest
+    pull_policy: daily
+```
+
+See the [Compose pull policy documentation](https://docs.docker.com/reference/compose-file/services/#pull_policy) for policy values. `pull_policy: build` is unsupported.
 
 Mount requests follow Docker Compose serialization for supported bind, volume, and tmpfs mounts, including bind propagation/recursion and volume nocopy/subpath/labels. See [the captured compatibility cases](compose/testdata/mounts/README.md) for the reference version, selection rules, and test commands.
 
