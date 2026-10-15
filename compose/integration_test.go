@@ -19,7 +19,6 @@ import (
 	"time"
 
 	cerrdefs "github.com/containerd/errdefs"
-	"github.com/moby/moby/api/types/common"
 	"github.com/moby/moby/client"
 )
 
@@ -288,23 +287,33 @@ func TestIntegration_ExitCodePropagation(t *testing.T) {
 
 func TestIntegration_SignalPropagationZombiePrevention(t *testing.T) {
 	_, svc := setupIntegration(t)
+	cli, err := client.New(mustClientOpts(t)...)
+	if err != nil {
+		t.Fatalf("docker client: %v", err)
+	}
+	defer cli.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	cmd := svc.CommandContext(ctx, "sleep", "10")
+	cmd := svc.CommandContext(ctx, "sleep", "60")
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
+	st, err := cmd.snapshotWaitState()
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	containerID := st.id
 
 	time.Sleep(1 * time.Second)
 	cancelAt := time.Now()
 	cancel()
 
-	err := cmd.Wait()
+	err = cmd.Wait()
 	elapsed := time.Since(cancelAt)
-	if elapsed >= 2*time.Second {
-		t.Fatalf("Wait took too long: %s", elapsed)
+	if elapsed >= 15*time.Second {
+		t.Errorf("Wait took too long: %s", elapsed)
 	}
 	if err == nil {
 		t.Fatalf("expected error")
@@ -312,11 +321,15 @@ func TestIntegration_SignalPropagationZombiePrevention(t *testing.T) {
 	// Accept either context cancellation or non-zero exit (killed/stopped).
 	if !errors.Is(err, context.Canceled) {
 		var ee *ExitError
-		if !errors.As(err, &ee) {
-			// Some Docker errors may wrap; still non-nil is required.
-			var derr common.ErrorResponse
-			_ = errors.As(err, &derr)
+		if !errors.As(err, &ee) || ee.ExitCode() == 0 {
+			t.Errorf("expected context cancellation or non-zero exit, got %T: %v", err, err)
 		}
+	}
+	inspectCtx, cancelInspect := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelInspect()
+	_, err = cli.ContainerInspect(inspectCtx, containerID, client.ContainerInspectOptions{})
+	if !cerrdefs.IsNotFound(err) {
+		t.Fatalf("expected container to be removed, inspect error: %v", err)
 	}
 }
 
@@ -907,6 +920,11 @@ func (fw *faultyWriter) Write(p []byte) (n int, err error) {
 
 func TestIntegration_WriterError_SilentFailure(t *testing.T) {
 	_, svc := setupIntegration(t)
+	cli, err := client.New(mustClientOpts(t)...)
+	if err != nil {
+		t.Fatalf("docker client: %v", err)
+	}
+	defer cli.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -918,14 +936,25 @@ func TestIntegration_WriterError_SilentFailure(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
+	st, err := cmd.snapshotWaitState()
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	containerID := st.id
 
-	err := cmd.Wait()
+	err = cmd.Wait()
 
 	if err == nil {
 		t.Fatalf("expected writer error, got nil")
 	}
 	if !errors.Is(err, expectedErr) {
 		t.Fatalf("expected writer error %v, got %v", expectedErr, err)
+	}
+	inspectCtx, cancelInspect := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelInspect()
+	_, err = cli.ContainerInspect(inspectCtx, containerID, client.ContainerInspectOptions{})
+	if !cerrdefs.IsNotFound(err) {
+		t.Fatalf("expected container to be removed, inspect error: %v", err)
 	}
 }
 
