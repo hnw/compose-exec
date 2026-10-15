@@ -12,6 +12,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -616,8 +617,8 @@ func TestIntegration_HostConfigSecurityShmAndExtraHostsMapping(t *testing.T) {
 	}
 
 	securityOpts := j.Container.HostConfig.SecurityOpt
-	if !containsString(securityOpts, "no-new-privileges:true") &&
-		!containsString(securityOpts, "no-new-privileges=true") {
+	if !slices.Contains(securityOpts, "no-new-privileges:true") &&
+		!slices.Contains(securityOpts, "no-new-privileges=true") {
 		t.Fatalf("SecurityOpt=%v (expected no-new-privileges)", securityOpts)
 	}
 
@@ -626,10 +627,10 @@ func TestIntegration_HostConfigSecurityShmAndExtraHostsMapping(t *testing.T) {
 	}
 
 	extraHosts := j.Container.HostConfig.ExtraHosts
-	if !containsString(extraHosts, "example.local:127.0.0.1") {
+	if !slices.Contains(extraHosts, "example.local:127.0.0.1") {
 		t.Fatalf("ExtraHosts=%v (expected example.local:127.0.0.1)", extraHosts)
 	}
-	if !containsString(extraHosts, "api.local:10.0.0.10") {
+	if !slices.Contains(extraHosts, "api.local:10.0.0.10") {
 		t.Fatalf("ExtraHosts=%v (expected api.local:10.0.0.10)", extraHosts)
 	}
 
@@ -764,15 +765,6 @@ func containsCapability(ss []string, want string) bool {
 	for _, s := range ss {
 		s = strings.ToUpper(s)
 		if s == want || s == alt {
-			return true
-		}
-	}
-	return false
-}
-
-func containsString(ss []string, want string) bool {
-	for _, s := range ss {
-		if s == want {
 			return true
 		}
 	}

@@ -349,10 +349,6 @@ func serviceEnvSlice(svc types.ServiceConfig) []string {
 	if len(svc.Environment) == 0 {
 		return nil
 	}
-	// types.MappingWithEquals supports ToSlice() in compose-go v2.
-	if toSlice, ok := any(svc.Environment).(interface{ ToSlice() []string }); ok {
-		return toSlice.ToSlice()
-	}
 	out := make([]string, 0, len(svc.Environment))
 	for k, v := range svc.Environment {
 		if v == nil {
