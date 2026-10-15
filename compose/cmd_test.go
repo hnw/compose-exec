@@ -804,6 +804,37 @@ func TestWaitForExit_ClosedErrChStillWaitsForResp(t *testing.T) {
 	}
 }
 
+func TestCmd_Wait_PreservesOOMKilledContainerState(t *testing.T) {
+	state := &container.State{
+		Status:    "exited",
+		ExitCode:  137,
+		OOMKilled: true,
+	}
+	fd := &fakeDocker{
+		inspectResp: container.InspectResponse{State: state},
+	}
+	respCh := make(chan container.WaitResponse, 1)
+	respCh <- container.WaitResponse{StatusCode: 137}
+	c := &Cmd{
+		docker:      fd,
+		started:     true,
+		containerID: "cid",
+		waitRespCh:  respCh,
+	}
+
+	err := c.Wait()
+	var ee *ExitError
+	if !errors.As(err, &ee) {
+		t.Fatalf("expected *ExitError, got %T: %v", err, err)
+	}
+	if ee.ExitCode() != 137 {
+		t.Fatalf("exit=%d want=137", ee.ExitCode())
+	}
+	if ee.ContainerState == nil || !ee.ContainerState.OOMKilled {
+		t.Fatalf("ContainerState=%+v, want OOMKilled=true", ee.ContainerState)
+	}
+}
+
 func TestCmd_WaitUntilHealthy_StopsOnSignalContext(t *testing.T) {
 	fd := &fakeDocker{
 		inspectResp: container.InspectResponse{
