@@ -13,7 +13,7 @@ import (
 
 // Wait waits for the started container to exit and returns its exit status.
 // If created via CommandContext, its context controls cancellation.
-func (c *Cmd) Wait() error {
+func (c *Cmd) Wait() (err error) {
 	ctx := c.contextOrBackground()
 	defer c.closeDockerIfOwned()
 	st, err := c.snapshotWaitState()
@@ -23,17 +23,24 @@ func (c *Cmd) Wait() error {
 	if st.stopSignals != nil {
 		defer st.stopSignals()
 	}
+	defer func() {
+		if rmErr := forceRemoveContainer(context.Background(), st.dc, st.id); rmErr != nil {
+			cleanupErr := fmt.Errorf("compose: cleanup failed: %w", rmErr)
+			if err != nil {
+				err = errors.Join(err, cleanupErr)
+			} else {
+				err = cleanupErr
+			}
+		}
+	}()
+	defer closeAttach(st.attach)
 
 	waitResp, err := waitForExit(ctx, st.sigCtx, st.dc, st.id, st.respCh, st.errCh)
 	if err != nil {
 		return err
 	}
 
-	ioErr := waitForIO(ctx, st.dc, st.id, st.attach, st.stdinDone, st.ioDone, st.ioErrCh)
-
-	closeAttach(st.attach)
-
-	if ioErr != nil {
+	if ioErr := waitForIO(ctx, st.stdinDone, st.ioDone, st.ioErrCh); ioErr != nil {
 		return ioErr
 	}
 
@@ -43,28 +50,15 @@ func (c *Cmd) Wait() error {
 		exitState = captureContainerState(st.dc, st.id)
 	}
 
-	rmErr := forceRemoveContainer(context.Background(), st.dc, st.id)
-
 	if waitResp.Error != nil {
-		err := errors.New(waitResp.Error.Message)
-		if rmErr != nil {
-			return errors.Join(err, fmt.Errorf("compose: cleanup failed: %w", rmErr))
-		}
-		return err
+		return errors.New(waitResp.Error.Message)
 	}
 	if code != 0 {
-		err := &ExitError{
+		return &ExitError{
 			Code:           code,
 			Stderr:         c.stderrBuf.Bytes(),
 			ContainerState: exitState,
 		}
-		if rmErr != nil {
-			return errors.Join(err, fmt.Errorf("compose: cleanup failed: %w", rmErr))
-		}
-		return err
-	}
-	if rmErr != nil {
-		return fmt.Errorf("compose: cleanup failed: %w", rmErr)
 	}
 	return nil
 }
@@ -243,7 +237,6 @@ func waitForExit(
 				continue
 			}
 			if err != nil {
-				_ = forceRemoveContainer(context.Background(), dc, id)
 				return container.WaitResponse{}, err
 			}
 		}
@@ -260,9 +253,6 @@ func closeAttach(attach *client.HijackedResponse) {
 
 func waitForIO(
 	ctx context.Context,
-	dc dockerAPI,
-	id string,
-	attach *client.HijackedResponse,
 	stdinDone chan struct{},
 	ioDone chan struct{},
 	ioErrCh chan error,
@@ -287,8 +277,6 @@ func waitForIO(
 			}
 			return nil
 		case <-ctx.Done():
-			closeAttach(attach)
-			_ = forceRemoveContainer(context.Background(), dc, id)
 			return ctx.Err()
 		}
 	}
